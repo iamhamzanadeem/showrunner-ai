@@ -65,13 +65,24 @@ def get_providers(cfg: Optional[Settings] = None) -> ProviderBundle:
 
     # Instantiate image provider
     if image_choice == "google":
-        image = GoogleImageProvider()
+        image = GoogleImageProvider(
+            api_key=active_settings.GEMINI_API_KEY,
+            project=active_settings.GOOGLE_CLOUD_PROJECT,
+            model=active_settings.SR_MODEL_IMAGE,
+        )
     else:
         image = MockImageProvider()
 
     # Instantiate video provider
     if video_choice == "google":
-        video = GoogleVideoProvider()
+        video = GoogleVideoProvider(
+            api_key=active_settings.GEMINI_API_KEY,
+            project=active_settings.GOOGLE_CLOUD_PROJECT,
+            model=active_settings.SR_MODEL_VIDEO,
+            resolution=active_settings.SR_VIDEO_RESOLUTION,
+            aspect_ratio=active_settings.SR_ASPECT,
+            timeout_s=active_settings.SR_VEO_TIMEOUT_S,
+        )
     else:
         video = MockVideoProvider()
 
@@ -87,13 +98,22 @@ def get_providers(cfg: Optional[Settings] = None) -> ProviderBundle:
 
     # Instantiate TTS provider
     if tts_choice == "google":
-        tts = GoogleTTSProvider()
+        tts = GoogleTTSProvider(
+            api_key=active_settings.GEMINI_API_KEY,
+            project=active_settings.GOOGLE_CLOUD_PROJECT,
+            model=active_settings.SR_MODEL_TTS,
+            voice_name=active_settings.SR_TTS_VOICE,
+        )
     else:
         tts = MockTTSProvider()
 
     # Instantiate music provider
     if music_choice == "google":
-        music = GoogleMusicProvider()
+        music = GoogleMusicProvider(
+            api_key=active_settings.GEMINI_API_KEY,
+            project=active_settings.GOOGLE_CLOUD_PROJECT,
+            model=active_settings.SR_MODEL_MUSIC,
+        )
     else:
         music = MockMusicProvider()
 

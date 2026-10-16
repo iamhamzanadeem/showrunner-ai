@@ -28,9 +28,14 @@ def test_health_endpoint(client):
     assert response.status_code == 200
     data = response.json()
     assert data["status"] == "ok"
-    assert data["active_provider"] in ["mock", "google"]
+    assert data["active_provider"] in ["mock", "google", "hybrid"]
     assert "version" in data
     assert "storage_dir" in data
+    assert "providers" in data
+    assert "planner" in data["providers"]
+    assert "video" in data["providers"]
+    assert "models" in data
+    assert data["models"]["video"] == settings.SR_MODEL_VIDEO
 
 
 def test_index_frontend(client):
