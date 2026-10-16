@@ -73,8 +73,120 @@ def _hex_to_rgb(hex_code: str, fallback=(18, 22, 34)) -> tuple[int, int, int]:
     return fallback
 
 
+def _extract_brief_entities(brief: str) -> Dict[str, Any]:
+    """
+    Deterministically extracts:
+    - brand/product name (e.g. 'Chai Bloom', 'Kinetic Zero', 'Aethelgard Chrono')
+    - character name & role (e.g. 'Ayesha', 'young architect')
+    - location (e.g. 'Islamabad', 'Tokyo', 'Kepler-9')
+    - product descriptor / category (e.g. 'premium Pakistani masala chai brand')
+    - atmospheric setting (e.g. 'rainy morning')
+    """
+    keywords = _extract_keywords(brief)
+    primary_subject = keywords[0].capitalize() if keywords else "Apex"
+    secondary_subject = keywords[1].capitalize() if len(keywords) > 1 else "Odyssey"
+
+    # 1. Brand / Product name
+    quoted = re.findall(r"['\"]([^'\"]+)['\"]", brief)
+    brand_name = None
+    if quoted:
+        brand_name = quoted[0].strip()
+    else:
+        m_brand = re.search(
+            r"\b(?:for|titled|named|called|brand)\s+([A-Z][a-zA-Z0-9]+(?:\s+[A-Z][a-zA-Z0-9]+)*)",
+            brief,
+        )
+        if m_brand:
+            brand_name = m_brand.group(1).strip()
+
+    if not brand_name:
+        brand_name = f"{primary_subject} {secondary_subject}" if len(keywords) > 1 else f"{primary_subject} Core"
+
+    # 2. Character name and role
+    char_name = None
+    char_role = "Lead Protagonist"
+    m_char = re.search(
+        r"\b(?:featuring|starring|with|tracking|follows|scout|astronaut|runner|agent)\s+([A-Z][a-z]+)(?:,\s*(?:a|an)\s+([^,.]+?)(?:\s+in|\s+on|\s+at|,|\.))?",
+        brief,
+    )
+    if m_char:
+        char_name = m_char.group(1).strip()
+        if m_char.group(2):
+            char_role = m_char.group(2).strip().title()
+
+    if not char_name:
+        m_title = re.search(r"\b(Dr\.|Scout|Agent|Pilot)\s+([A-Z][a-z]+)", brief)
+        if m_title:
+            char_name = m_title.group(2).strip()
+            char_role = m_title.group(1).strip()
+        else:
+            char_name = f"{primary_subject} Hero"
+            char_role = "Lead"
+
+    # 3. Location
+    m_loc = re.search(
+        r"\b(?:in|across|on|over)\s+(?:an?\s+)?([A-Z][a-zA-Z0-9\-]+(?:\s+[A-Z][a-zA-Z0-9\-]+)?)",
+        brief,
+    )
+    location = m_loc.group(1).strip() if m_loc else (secondary_subject if secondary_subject != brand_name else "the city")
+
+    # 4. Setting / Atmosphere
+    m_weather = re.search(
+        r"\b(rainy morning|rain-slicked|rainy|midnight|dawn|dusk|sunset|winter|ice canyons|storm|morning|foggy)\b",
+        brief,
+        re.IGNORECASE,
+    )
+    setting = m_weather.group(1).lower() if m_weather else "morning"
+
+    # 5. Product descriptor / Category
+    m_desc = re.search(
+        r"for\s+[^,]+,\s*(?:a|an)\s+([^,.]+?(?:brand|chai|tea|drink|watch|beacon|device|technology|core|wearable))",
+        brief,
+        re.IGNORECASE,
+    )
+    if m_desc:
+        product_desc = m_desc.group(1).strip()
+    elif any(w in brief.lower() for w in ["chai", "tea"]):
+        product_desc = "premium artisanal masala chai with aromatic spices"
+    elif any(w in brief.lower() for w in ["energy", "drink"]):
+        product_desc = "high-performance quantum energy beverage"
+    elif any(w in brief.lower() for w in ["watch", "chrono"]):
+        product_desc = "handcrafted mechanical timepiece of celestial precision"
+    else:
+        product_desc = f"mastercrafted {primary_subject.lower()} precision edition"
+
+    # Determine genre
+    lower_brief = brief.lower()
+    if any(w in lower_brief for w in ["chai", "tea", "coffee", "bazaar", "artisan", "islamabad", "lahore", "karachi", "food", "cafe", "brew", "spice", "fragrance", "pakistani"]):
+        genre = "chai"
+    elif any(w in lower_brief for w in ["cyber", "neon", "tech", "ai", "future", "quantum"]):
+        genre = "cyber"
+    elif any(w in lower_brief for w in ["nature", "eco", "green", "earth", "sun", "organic"]):
+        genre = "nature"
+    elif any(w in lower_brief for w in ["space", "odyssey", "sci-fi", "alien", "canyon", "colony", "scout"]):
+        genre = "space"
+    else:
+        genre = "luxury"
+
+    return {
+        "brand_name": brand_name,
+        "char_name": char_name,
+        "char_role": char_role,
+        "location": location,
+        "setting": setting,
+        "product_desc": product_desc,
+        "genre": genre,
+        "primary_subject": primary_subject,
+        "secondary_subject": secondary_subject,
+    }
+
+
 class MockPlannerProvider(BasePlannerProvider):
-    """Deterministic, brief-aware mock planner generating realistic production blueprints."""
+    """
+    Deterministic rule-based video planner for mock mode.
+    Synthesizes pacing, character specs, visual style, and shot lists
+    calibrated for 30s ad mode (~5 shots) and 2.5m short film mode (~18 shots).
+    """
 
     async def generate_plan(
         self,
@@ -82,55 +194,54 @@ class MockPlannerProvider(BasePlannerProvider):
         mode: VideoMode,
         ref_images: Optional[List[str]] = None,
     ) -> Plan:
-        keywords = _extract_keywords(brief)
-        primary_subject = keywords[0].capitalize() if keywords else "Apex"
-        secondary_subject = (
-            keywords[1].capitalize() if len(keywords) > 1 else "Odyssey"
-        )
-        brief_title = f"{primary_subject}: {secondary_subject}"
+        entities = _extract_brief_entities(brief)
+        brand_name = entities["brand_name"]
+        char_name = entities["char_name"]
+        char_role = entities["char_role"]
+        location = entities["location"]
+        setting = entities["setting"]
+        product_desc = entities["product_desc"]
+        product_name = brand_name
+        genre = entities["genre"]
+        primary_subject = entities["primary_subject"]
+        secondary_subject = entities["secondary_subject"]
 
-        # Style analysis based on brief text
-        lower_brief = brief.lower()
-        if any(w in lower_brief for w in ["chai", "tea", "coffee", "bazaar", "artisan", "islamabad", "lahore", "karachi", "food", "cafe", "brew", "spice", "fragrance"]):
+        if mode == VideoMode.ad:
+            brief_title = f"{brand_name}: {location}" if location and location != brand_name else brand_name
+        else:
+            brief_title = f"{char_name}: The Journey" if char_name and "Hero" not in char_name else f"{primary_subject}: {secondary_subject}"
+
+        # Style analysis based on genre
+        if genre == "chai":
             palette = ["#260F08", "#C85A17", "#E5A030", "#FBF2E3"]
-            lighting = f"Warm morning sunbeams filtering through rising steam across {secondary_subject}"
+            lighting = f"Warm morning sunbeams filtering through rising steam across {location}"
             lens = "85mm f/1.4 portrait glass with creamy organic flare and golden bokeh"
-            mood = f"Aromatic, artisanal, rich cultural heritage of {secondary_subject}"
-            char_name = f"Master {primary_subject}"
-            char_role = "Master Artisan"
-            char_appearance = f"Traditional handcrafted vest, warm welcoming smile, steaming ceramic cups in {secondary_subject}"
-            product_name = f"{primary_subject} Heritage"
-            product_desc = f"Artisanal freshly poured {primary_subject.lower()} served in handcrafted terracotta cups with cardamom aroma"
-        elif any(w in lower_brief for w in ["cyber", "neon", "tech", "ai", "future", "space"]):
+            mood = f"Aromatic, artisanal, rich cultural heritage of {location}"
+            char_appearance = f"Contemporary thoughtful demeanor, tailored silhouette, observing {location} on a {setting}"
+        elif genre == "cyber":
             palette = ["#0A0F1D", "#00F0FF", "#7000FF", "#FF007A"]
-            lighting = "Atmospheric volumetric neon haze, high contrast deep shadows"
+            lighting = f"Atmospheric volumetric neon haze, high contrast rain-slicked reflections across {location}"
             lens = "Anamorphic 35mm T1.5 with subtle horizontal blue streak flares"
             mood = "Futuristic, visionary, electrifying tension"
-            char_name = f"Agent {primary_subject}"
-            char_role = "Pioneering Operative"
             char_appearance = "Sleek tactical attire with subtle bioluminescent accents and focused gaze"
-            product_name = f"{primary_subject} Core"
-            product_desc = "Next-generation precision device glowing with cyan edge-illumination"
-        elif any(w in lower_brief for w in ["nature", "eco", "green", "earth", "sun", "organic"]):
+        elif genre == "nature":
             palette = ["#1B3B2B", "#F5EBE1", "#E6A15C", "#2D5A43"]
-            lighting = "Warm golden hour directional backlight with natural lens dust motes"
+            lighting = f"Warm golden hour directional backlight with natural lens dust motes in {location}"
             lens = "50mm f/1.2 prime, creamy organic bokeh and warm falloff"
             mood = "Earthy, aspirational, deeply grounding and serene"
-            char_name = f"Dr. {primary_subject}"
-            char_role = "Field Researcher"
             char_appearance = "Weathered linen field jacket, candid warmth, attentive expression"
-            product_name = f"{primary_subject} Natural"
-            product_desc = "Sustainably crafted artisan form factor with matte mineral texture"
+        elif genre == "space":
+            palette = ["#050814", "#38BDF8", "#818CF8", "#F8FAFC"]
+            lighting = f"Harsh glacial starlight cutting across icy terrain on {location}"
+            lens = "Anamorphic 40mm cinematic prime with wide spatial curvature"
+            mood = "Expansive, isolated, awe-inspiring cosmic mystery"
+            char_appearance = "Pressurized exploration suit with frosted gold visor and utility harness"
         else:
             palette = ["#09090B", "#D4AF37", "#27272A", "#FFFFFF"]
-            lighting = "Sculptural studio rim-lighting with soft wrap key fill"
+            lighting = f"Sculptural studio rim-lighting with soft wrap key fill over {location}"
             lens = "Leica Noctilux 50mm f/0.95 cinematic glass"
             mood = "Prestige, confident, sleek and cinematic elegance"
-            char_name = f"{primary_subject} Hero"
-            char_role = "Lead Protagonist"
             char_appearance = "Tailored minimalist silhouette with poised demeanor and sharp profile"
-            product_name = f"{primary_subject} Signature"
-            product_desc = "Precision engineered brushed-alloy silhouette with mirror accents"
 
         bible = Bible(
             style=BibleStyle(
@@ -148,8 +259,8 @@ class MockPlannerProvider(BasePlannerProvider):
             ],
             products=[
                 ProductSpec(
-                    name=product_name,
-                    description=product_desc,
+                    name=brand_name,
+                    description=f"Artisanal {product_desc}, steam curling into the crisp {setting} air",
                     reference_image=ref_images[0] if ref_images else None,
                 )
             ],
@@ -157,21 +268,38 @@ class MockPlannerProvider(BasePlannerProvider):
 
         if mode == VideoMode.ad:
             # 5 shots across 3 scenes totalling ~32 seconds (within 30-45s)
+            is_rainy = "rain" in setting or location == "Islamabad"
+            vo_hook = (
+                f"Rain over {location}. {char_name}'s day starts before the sun."
+                if is_rainy and char_name
+                else (f"{location}. Where ambition meets the dawn." if location else "In a world accelerating past human limits, compromise was once the only option.")
+            )
+            vo_reveal = (
+                "A tradition perfected across generations. Pure aroma, uncompromised warmth."
+                if genre == "chai"
+                else f"Meet {brand_name}. Engineered not just to keep pace, but to set the rhythm."
+            )
+            vo_tagline = (
+                f"{brand_name}. Brewed for the bold."
+                if genre == "chai"
+                else f"{brand_name}. Define your future today."
+            )
+
             scenes = [
                 Scene(
                     id="scene_1",
                     scene_number=1,
-                    title="The Hook: Chaos of Ordinary",
-                    summary=f"Establish the friction and inertia before discovering {product_name}.",
+                    title=f"The Hook: Dawn in {location}",
+                    summary=f"Establish the quiet morning atmosphere and {char_name}'s contemplative ritual.",
                     shots=[
                         Shot(
                             id="shot_1_1",
                             scene_id="scene_1",
                             duration_s=6.0,
-                            description=f"Wide dynamic establish: city bustle where {char_name} pauses.",
+                            description=f"Wide dynamic establish: city bustle in {location} where {char_name} pauses.",
                             camera="Wide tracking shot moving backwards, low angle, slow tilt up",
-                            visual_prompt=f"Cinematic wide shot, {mood.lower()}, {lighting}, {char_name} walking against the crowd, 8k resolution, cinematic color grade.",
-                            vo_line="In a world accelerating past human limits, compromise was once the only option.",
+                            visual_prompt=f"Cinematic wide establishing shot of {location}, {setting} atmosphere with soft reflections, {char_name} walking with calm purpose, warm ambient interior light contrasting with the street, 8k resolution, cinematic color grade.",
+                            vo_line=vo_hook,
                             characters_referenced=[char_name],
                             products_referenced=[],
                             chain_from_previous=False,
@@ -181,10 +309,10 @@ class MockPlannerProvider(BasePlannerProvider):
                             id="shot_1_2",
                             scene_id="scene_1",
                             duration_s=7.0,
-                            description=f"Intense close-up on {char_name}'s eyes as reflection shimmers.",
+                            description=f"Intense close-up on {char_name} drafting with focused expression.",
                             camera="Extreme close-up pushing slowly into the iris, rack focus",
-                            visual_prompt=f"Macro extreme close-up of {char_name}'s eye reflecting luminous glow of {palette[1]}, intense focus, {lens}.",
-                            vo_line="Until every standard had to be reimagined from the foundation up.",
+                            visual_prompt=f"Macro extreme close-up of {char_name}'s focused expression, soft natural rim lighting from window, delicate steam rising in the background, {lens}.",
+                            vo_line="In the quiet moments before creation, every detail matters." if char_name else "Until every standard had to be reimagined from the foundation up.",
                             characters_referenced=[char_name],
                             products_referenced=[],
                             chain_from_previous=True,
@@ -195,19 +323,19 @@ class MockPlannerProvider(BasePlannerProvider):
                 Scene(
                     id="scene_2",
                     scene_number=2,
-                    title="The Reveal: Engineering Mastery",
-                    summary=f"Heroic presentation of {product_name} in dynamic action.",
+                    title=f"The Reveal: {brand_name}",
+                    summary=f"Heroic presentation of {brand_name} with velvety steam and rich aroma.",
                     shots=[
                         Shot(
                             id="shot_2_1",
                             scene_id="scene_2",
                             duration_s=7.0,
-                            description=f"Product reveal: {product_name} floating effortlessly in dynamic studio space.",
+                            description=f"Product reveal: {brand_name} freshly poured in dynamic space.",
                             camera="360-degree rotational arc orbiting the product",
-                            visual_prompt=f"Hero commercial packshot of {product_name}, {product_desc}, levitating amidst dust particles illuminated by {palette[1]}, ultra-clean.",
-                            vo_line=f"Meet {product_name}. Engineered not just to keep pace, but to set the rhythm.",
+                            visual_prompt=f"Hero commercial packshot of {brand_name}, {product_desc}, levitating amidst warm particles illuminated by {palette[1]}, ultra-clean commercial look.",
+                            vo_line=vo_reveal,
                             characters_referenced=[],
-                            products_referenced=[product_name],
+                            products_referenced=[brand_name],
                             chain_from_previous=False,
                             status=ShotStatus.pending,
                         ),
@@ -215,12 +343,12 @@ class MockPlannerProvider(BasePlannerProvider):
                             id="shot_2_2",
                             scene_id="scene_2",
                             duration_s=6.0,
-                            description=f"{char_name} interacting with {product_name} as energy bursts forward.",
+                            description=f"{char_name} interacting with {brand_name} as energy bursts forward.",
                             camera="Medium close-up profile shot, handheld kinetic motion",
-                            visual_prompt=f"Dynamic medium shot of {char_name} engaging with {product_name}, surge of {palette[1]} light across the frame, triumphant energy.",
-                            vo_line="Instant response. Unmatched craftsmanship. Zero friction.",
+                            visual_prompt=f"Dynamic medium shot of {char_name} engaging with {brand_name}, surge of warm golden light across the frame, triumphant energy and renewed focus.",
+                            vo_line="Crafted for the creators, the visionaries, the tireless." if char_name else "Instant response. Unmatched craftsmanship. Zero friction.",
                             characters_referenced=[char_name],
-                            products_referenced=[product_name],
+                            products_referenced=[brand_name],
                             chain_from_previous=True,
                             status=ShotStatus.pending,
                         ),
@@ -229,19 +357,19 @@ class MockPlannerProvider(BasePlannerProvider):
                 Scene(
                     id="scene_3",
                     scene_number=3,
-                    title="The Climax: The Brand Statement",
-                    summary="Iconic lockup, final aspirational gaze and tagline.",
+                    title=f"The Climax: {brand_name} Statement",
+                    summary="Iconic brand lockup, final aspirational gaze and signature tagline.",
                     shots=[
                         Shot(
                             id="shot_3_1",
                             scene_id="scene_3",
                             duration_s=6.0,
-                            description=f"Hero freeze-frame transition into {product_name} emblem and brand lockup.",
+                            description=f"Hero freeze-frame transition into {brand_name} emblem and brand lockup.",
                             camera="Slow zoom out from product emblem to wide majestic horizon",
-                            visual_prompt=f"Aesthetic brand lockup shot, {product_name} resting proudly at center frame, backdrop of endless horizon bathed in {palette[0]} gradients.",
-                            vo_line=f"{primary_subject}. Define your future today.",
+                            visual_prompt=f"Aesthetic brand lockup shot, {brand_name} resting proudly at center frame, backdrop of {location} horizon bathed in {palette[0]} gradients, prestigious typography.",
+                            vo_line=vo_tagline,
                             characters_referenced=[char_name],
-                            products_referenced=[product_name],
+                            products_referenced=[brand_name],
                             chain_from_previous=False,
                             status=ShotStatus.pending,
                         ),
@@ -257,13 +385,13 @@ class MockPlannerProvider(BasePlannerProvider):
                     id="scene_1",
                     scene_number=1,
                     title="Act I: The Boundary of Silence",
-                    summary=f"Establish the atmospheric solitude of {char_name}'s territory.",
+                    summary=f"Establish the atmospheric solitude of {char_name} across {location}.",
                     shots=[
                         Shot(
                             id="shot_1_1",
                             scene_id="scene_1",
                             duration_s=7.0,
-                            description=f"Sweeping aerial landscape establishing the vast expanse of {primary_subject}.",
+                            description=f"Sweeping aerial landscape establishing the vast expanse of {location}.",
                             camera="Extreme wide drone descent, sweeping forward over atmospheric terrain",
                             visual_prompt=f"Cinematic wide establishing shot of vast desolate landscape, {lighting}, {mood}, atmospheric fog, 35mm anamorphic film grain.",
                             vo_line="They told us nothing survived past the perimeter wall.",
@@ -700,22 +828,44 @@ class MockImageProvider(BaseImageProvider):
         c2 = _hex_to_rgb(style.palette[1] if len(style.palette) > 1 else "#3b82f6")
         lower_prompt = prompt.lower()
         if "warmer" in lower_prompt or "warm" in lower_prompt:
-            c1 = (90, 30, 10)
-            c2 = (240, 120, 20)
+            c1 = (130, 45, 12)
+            c2 = (255, 140, 20)
         elif "cooler" in lower_prompt or "cool" in lower_prompt:
-            c1 = (10, 40, 70)
-            c2 = (0, 180, 230)
+            c1 = (8, 35, 75)
+            c2 = (15, 160, 230)
 
-        img = Image.new("RGB", (1280, 720), color=c1)
+        # If ref_image (e.g. from continuity chaining) is provided, load and optionally tint it
+        loaded_img = None
+        if ref_image:
+            ref_path = Path(ref_image)
+            if not ref_path.exists() and job_dir:
+                ref_path = job_dir / Path(ref_image).name
+            if ref_path.exists():
+                try:
+                    loaded_img = Image.open(ref_path).convert("RGB").resize((1280, 720))
+                    if "warmer" in lower_prompt or "warm" in lower_prompt:
+                        warm_overlay = Image.new("RGB", (1280, 720), color=(245, 130, 20))
+                        loaded_img = Image.blend(loaded_img, warm_overlay, alpha=0.25)
+                    elif "cooler" in lower_prompt or "cool" in lower_prompt:
+                        cool_overlay = Image.new("RGB", (1280, 720), color=(10, 150, 230))
+                        loaded_img = Image.blend(loaded_img, cool_overlay, alpha=0.25)
+                except Exception:
+                    loaded_img = None
+
+        if loaded_img:
+            img = loaded_img
+        else:
+            img = Image.new("RGB", (1280, 720), color=c1)
+            draw_grad = ImageDraw.Draw(img)
+            # Draw smooth vertical color gradient
+            for y_coord in range(0, 720, 2):
+                ratio = y_coord / 720.0
+                r = int(c1[0] * (1 - ratio) + c2[0] * ratio)
+                g = int(c1[1] * (1 - ratio) + c2[1] * ratio)
+                b = int(c1[2] * (1 - ratio) + c2[2] * ratio)
+                draw_grad.line([(0, y_coord), (1280, y_coord)], fill=(r, g, b), width=2)
+
         draw = ImageDraw.Draw(img)
-
-        # Draw smooth vertical color gradient
-        for y_coord in range(0, 720, 2):
-            ratio = y_coord / 720.0
-            r = int(c1[0] * (1 - ratio) + c2[0] * ratio)
-            g = int(c1[1] * (1 - ratio) + c2[1] * ratio)
-            b = int(c1[2] * (1 - ratio) + c2[2] * ratio)
-            draw.line([(0, y_coord), (1280, y_coord)], fill=(r, g, b), width=2)
 
         # Outer framing
         accent_rgb = (255, 200, 50) if "warm" in lower_prompt else (6, 182, 212)
@@ -751,7 +901,7 @@ class MockImageProvider(BaseImageProvider):
 
 
 class MockVideoProvider(BaseVideoProvider):
-    """Generates mock video clips via FFmpeg lavfi sources with continuity chaining."""
+    """Generates mock video clips animating keyframe images via FFmpeg with continuity chaining."""
 
     async def generate_clip(
         self,
@@ -771,53 +921,65 @@ class MockVideoProvider(BaseVideoProvider):
         out_path = (job_dir or Path("./data")) / filename
 
         dur_str = f"{duration_s:.2f}"
-        safe_header = f"Scene {scene_num} - Shot {shot_num} - Attempt {attempt}"
+
+        # Locate the keyframe PNG to animate
+        source_img = None
+        if initial_frame and Path(initial_frame).exists():
+            source_img = Path(initial_frame)
+        elif job_dir and shot_id:
+            candidate = job_dir / f"{shot_id}_att{attempt}_keyframe.png"
+            if candidate.exists():
+                source_img = candidate
+            else:
+                matches = sorted(list(job_dir.glob(f"{shot_id}*keyframe.png")))
+                if matches:
+                    source_img = matches[-1]
+
+        if not source_img or not source_img.exists():
+            fallback_kf = (job_dir or Path("./data")) / f"{shot_id or 'shot'}_att{attempt}_keyframe.png"
+            if not fallback_kf.exists():
+                fallback_img = Image.new("RGB", (1280, 720), color=(25, 30, 45))
+                d = ImageDraw.Draw(fallback_img)
+                d.rectangle([15, 15, 1265, 705], outline=(6, 182, 212), width=2)
+                d.text((40, 40), f"SCENE {scene_num} · SHOT {shot_num} · ATTEMPT #{attempt}", fill=(255, 255, 255))
+                fallback_img.save(fallback_kf, "PNG")
+            source_img = fallback_kf
+
+        is_chained = bool(initial_frame and Path(initial_frame).exists())
+        chain_label = " [CHAINED]" if is_chained else ""
+        safe_header = f"Scene {scene_num} · Shot {shot_num} · Attempt {attempt}{chain_label}"
         safe_prompt = re.sub(r"[^a-zA-Z0-9 _\-]", "", prompt[:40])
 
         lower_prompt = prompt.lower()
+        color_filter = ""
         if "warmer" in lower_prompt or "warm" in lower_prompt:
-            bg = "0x8A2A08"  # rich terracotta amber
             accent_col = "yellow"
+            color_filter = ",colorbalance=rs=0.30:gs=0.10:bs=-0.22:rm=0.28:gm=0.08:bm=-0.18"
         elif "cooler" in lower_prompt or "cool" in lower_prompt:
-            bg = "0x0B3C5D"  # deep twilight cyan
             accent_col = "cyan"
+            color_filter = ",colorbalance=rs=-0.22:gs=-0.05:bs=0.30:rm=-0.18:gm=-0.05:bm=0.28"
         else:
-            bg_colors = ["0x1A2844", "0x2D1B18", "0x183022", "0x321644"]
-            bg = bg_colors[(scene_num + shot_num) % len(bg_colors)]
             accent_col = "yellow"
 
-        if initial_frame and Path(initial_frame).exists():
-            # Continuity chaining: animate from initial frame with subtle zoompan motion
-            cmd = [
-                "ffmpeg", "-y",
-                "-loop", "1",
-                "-i", str(initial_frame),
-                "-t", dur_str,
-                "-vf", (
-                    f"scale=1280:720,zoompan=z='min(zoom+0.0008,1.05)':d=1:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=1280x720,"
-                    f"drawtext=text='{safe_header} [CHAINED]':x=40:y=40:fontsize=28:fontcolor=white:box=1:boxcolor=black@0.6:boxborderw=6,"
-                    f"drawtext=text='{safe_prompt}':x=40:y=80:fontsize=20:fontcolor={accent_col}:box=1:boxcolor=black@0.6:boxborderw=4"
-                ),
-                "-c:v", "libx264",
-                "-pix_fmt", "yuv420p",
-                "-r", "24",
-                str(out_path),
-            ]
-        else:
-            # Standalone visual shot with vivid colored background and clear labels
-            cmd = [
-                "ffmpeg", "-y",
-                "-f", "lavfi",
-                "-i", f"color=c={bg}:s=1280x720:d={dur_str}:r=24",
-                "-vf", (
-                    f"drawtext=text='{safe_header}':x=40:y=40:fontsize=28:fontcolor=white:box=1:boxcolor=black@0.6:boxborderw=6,"
-                    f"drawtext=text='{safe_prompt}':x=40:y=80:fontsize=20:fontcolor={accent_col}:box=1:boxcolor=black@0.6:boxborderw=4"
-                ),
-                "-c:v", "libx264",
-                "-pix_fmt", "yuv420p",
-                "-r", "24",
-                str(out_path),
-            ]
+        vf_chain = (
+            f"scale=1280:720,"
+            f"zoompan=z='min(zoom+0.0008,1.06)':d=1:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=1280x720:fps=24"
+            f"{color_filter},"
+            f"drawtext=text='{safe_header}':x=40:y=40:fontsize=24:fontcolor=white:box=1:boxcolor=black@0.65:boxborderw=6,"
+            f"drawtext=text='{safe_prompt}':x=40:y=76:fontsize=18:fontcolor={accent_col}:box=1:boxcolor=black@0.65:boxborderw=4"
+        )
+
+        cmd = [
+            "ffmpeg", "-y",
+            "-loop", "1",
+            "-i", str(source_img),
+            "-t", dur_str,
+            "-vf", vf_chain,
+            "-c:v", "libx264",
+            "-pix_fmt", "yuv420p",
+            "-r", "24",
+            str(out_path),
+        ]
 
         proc = await asyncio.create_subprocess_exec(
             *cmd,

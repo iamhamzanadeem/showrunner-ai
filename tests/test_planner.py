@@ -74,3 +74,25 @@ async def test_mock_planner_short_film_mode():
     assert plan.bible.style.lens
     assert len(plan.bible.characters) >= 1
     assert any("Maya" in c.name or "Hero" in c.name or "Operative" in c.name for c in plan.bible.characters)
+
+
+@pytest.mark.asyncio
+async def test_mock_planner_brief_aware_chai():
+    planner = MockPlannerProvider()
+    brief = "A 30s ad for Chai Bloom, a premium Pakistani masala chai brand, featuring Ayesha, a young architect in Islamabad on a rainy morning"
+    plan = await planner.generate_plan(brief=brief, mode=VideoMode.ad)
+
+    # 1. Title and entities
+    assert plan.title == "Chai Bloom: Islamabad"
+    assert len(plan.bible.characters) >= 1
+    assert plan.bible.characters[0].name == "Ayesha"
+    assert "Architect" in plan.bible.characters[0].role
+    assert len(plan.bible.products) >= 1
+    assert plan.bible.products[0].name == "Chai Bloom"
+
+    # 2. VO lines templated around entities
+    shot_1_1 = plan.scenes[0].shots[0]
+    assert shot_1_1.vo_line == "Rain over Islamabad. Ayesha's day starts before the sun."
+
+    shot_3_1 = plan.scenes[2].shots[0]
+    assert shot_3_1.vo_line == "Chai Bloom. Brewed for the bold."

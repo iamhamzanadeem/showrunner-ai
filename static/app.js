@@ -302,12 +302,14 @@ document.addEventListener("DOMContentLoaded", () => {
           ? `<div class="shot-vo-box" id="vo-${shot.id}">"${escapeHtml(shot.vo_line)}"</div>`
           : "";
 
-        const imgHtml = shot.image_url
-          ? `<img src="${shot.image_url}" class="shot-img-thumb" alt="${shot.id}">`
-          : "";
-
         const latestAttempt = (shot.attempts && shot.attempts.length) || 1;
         const lastAtt = shot.attempts && shot.attempts.length ? shot.attempts[shot.attempts.length - 1] : null;
+        const fallbackUrl = (lastAtt && lastAtt.image_url) ? lastAtt.image_url : (shot.image_url || "");
+        const initialSrc = shot.image_url || fallbackUrl;
+
+        const imgHtml = initialSrc
+          ? `<img src="${initialSrc}" class="shot-img-thumb" alt="${shot.id}" loading="eager" data-fallback="${fallbackUrl}" onerror="if(this.dataset.fallback && this.src !== this.dataset.fallback){this.src=this.dataset.fallback;}else{this.style.display='none';}">`
+          : "";
 
         shotCard.innerHTML = `
           <div class="shot-card-header">
@@ -379,9 +381,20 @@ document.addEventListener("DOMContentLoaded", () => {
         if (!img) {
           img = document.createElement("img");
           img.className = "shot-img-thumb";
+          img.alt = shotId;
           thumbBox.insertBefore(img, thumbBox.firstChild);
         }
+        img.loading = "eager";
+        img.dataset.fallback = data.image_url;
+        img.onerror = function() {
+          if (this.dataset.fallback && this.src !== this.dataset.fallback) {
+            this.src = this.dataset.fallback;
+          } else {
+            this.style.display = "none";
+          }
+        };
         img.src = `${data.image_url}?t=${Date.now()}`;
+        img.style.display = "";
       }
     }
 
