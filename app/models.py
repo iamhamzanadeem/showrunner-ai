@@ -178,3 +178,5 @@ class HealthResponse(BaseModel):
     active_provider: str
     version: str
     storage_dir: str
+    providers: Optional[Dict[str, str]] = None
+    models: Optional[Dict[str, str]] = None

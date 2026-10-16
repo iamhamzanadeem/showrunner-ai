@@ -78,12 +78,14 @@ app.add_middleware(
 
 @app.get("/api/health", response_model=HealthResponse)
 async def get_health() -> HealthResponse:
-    """Returns system status, active provider, and version."""
+    """Returns system status, active provider, providers mapping, models, and version."""
     return HealthResponse(
         status="ok",
         active_provider=settings.resolved_provider,
         version=__version__,
         storage_dir=str(settings.DATA_DIR.resolve()),
+        providers=settings.get_all_modality_providers(),
+        models=settings.get_configured_models(),
     )
 
 
