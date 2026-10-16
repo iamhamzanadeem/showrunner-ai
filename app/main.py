@@ -22,12 +22,15 @@ from app import __version__
 from app.config import settings
 from app.events import event_bus, sse_event_stream
 from app.models import (
+    ChatMessage,
+    ChatRequest,
     HealthResponse,
     Job,
     JobStatus,
+    JobSummaryResponse,
     VideoMode,
 )
-from app.pipeline.orchestrator import run_pipeline
+from app.pipeline.orchestrator import run_pipeline, run_refinement
 from app.pipeline.planner import save_job_state
 
 # In-memory fast cache of active jobs
@@ -178,6 +181,55 @@ async def create_job(request: Request) -> Dict[str, Any]:
     }
 
 
+@app.get("/api/jobs", response_model=List[JobSummaryResponse])
+async def list_jobs() -> List[JobSummaryResponse]:
+    """Lists all recent video production jobs sorted by creation time descending."""
+    results: Dict[str, JobSummaryResponse] = {}
+
+    # Scan persisted jobs on disk
+    jobs_dir = settings.DATA_DIR / "jobs"
+    if jobs_dir.exists():
+        for job_path in jobs_dir.iterdir():
+            if job_path.is_dir():
+                job_json = job_path / "job.json"
+                if job_json.exists():
+                    try:
+                        with open(job_json, "r", encoding="utf-8") as f:
+                            data = json.load(f)
+                            j = Job.model_validate(data)
+                            title = j.plan.title if j.plan else None
+                            results[j.id] = JobSummaryResponse(
+                                id=j.id,
+                                title=title,
+                                brief=j.brief,
+                                mode=j.mode,
+                                status=j.status,
+                                created_at=j.created_at,
+                                poster_url=j.poster_url,
+                                final_video_url=j.final_video_url,
+                            )
+                    except Exception:
+                        pass
+
+    # Merge in-memory cache
+    for j_id, j in jobs_db.items():
+        title = j.plan.title if j.plan else None
+        results[j_id] = JobSummaryResponse(
+            id=j.id,
+            title=title,
+            brief=j.brief,
+            mode=j.mode,
+            status=j.status,
+            created_at=j.created_at,
+            poster_url=j.poster_url,
+            final_video_url=j.final_video_url,
+        )
+
+    summaries = list(results.values())
+    summaries.sort(key=lambda s: s.created_at, reverse=True)
+    return summaries
+
+
 @app.get("/api/jobs/{job_id}")
 async def get_job(job_id: str) -> Job:
     """Retrieves full state, metadata, scenes, and shots for a given job."""
@@ -188,6 +240,57 @@ async def get_job(job_id: str) -> Job:
             detail=f"Job '{job_id}' not found.",
         )
     return job
+
+
+@app.post("/api/jobs/{job_id}/chat")
+async def chat_job_refinement(job_id: str, payload: ChatRequest) -> Dict[str, Any]:
+    """
+    Submits a director chat message to refine a completed job.
+    Returns 409 Conflict if the job is currently processing another stage.
+    """
+    job = load_job(job_id)
+    if not job:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Job '{job_id}' not found.",
+        )
+
+    message = payload.message.strip()
+    if not message:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Chat message cannot be empty.",
+        )
+
+    # Busy state check: only completed or failed jobs can be refined
+    busy_statuses = [
+        JobStatus.planning,
+        JobStatus.generating,
+        JobStatus.critiquing,
+        JobStatus.assembling,
+    ]
+    if job.status in busy_statuses:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Job '{job_id}' is currently busy in status '{job.status.value}'. Please wait for completion.",
+        )
+
+    # Append user message to chat history
+    user_msg = ChatMessage(role="user", text=message)
+    job.messages.append(user_msg)
+    job.status = JobStatus.generating
+    save_job_state(job)
+
+    # Launch refinement in background
+    asyncio.create_task(run_refinement(job, message))
+
+    next_ver = len(job.versions) + 1
+    return {
+        "status": "refining",
+        "job_id": job.id,
+        "message": message,
+        "target_version": next_ver,
+    }
 
 
 @app.get("/api/jobs/{job_id}/events")

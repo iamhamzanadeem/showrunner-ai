@@ -13,10 +13,12 @@ from app.models import (
     BibleStyle,
     CharacterSpec,
     Plan,
+    PlanEdit,
     ProductSpec,
     Scene,
     Shot,
     ShotStatus,
+    UpdatedShotSpec,
     VideoMode,
 )
 from app.providers.base import BasePlannerProvider
@@ -312,3 +314,141 @@ Design a complete, broadcast-ready production blueprint adhering to all director
             bible=bible,
             scenes=scenes,
         )
+
+    async def edit_plan(self, plan: Plan, message: str) -> PlanEdit:
+        client = get_genai_client(api_key=self.api_key, project=self.project)
+
+        # Plan summary representation for LLM context
+        plan_summary = {
+            "title": plan.title,
+            "mode": plan.mode.value,
+            "style": plan.bible.style.model_dump(),
+            "scenes": [
+                {
+                    "id": sc.id,
+                    "scene_number": sc.scene_number,
+                    "title": sc.title,
+                    "shots": [
+                        {
+                            "id": sh.id,
+                            "scene_id": sh.scene_id,
+                            "duration_s": sh.duration_s,
+                            "description": sh.description,
+                            "camera": sh.camera,
+                            "visual_prompt": sh.visual_prompt,
+                            "vo_line": sh.vo_line,
+                        }
+                        for sh in sc.shots
+                    ],
+                }
+                for sc in plan.scenes
+            ],
+        }
+
+        prompt = f"""Current Film Production Plan:
+{json.dumps(plan_summary, indent=2)}
+
+Director Chat Refinement Instruction:
+\"{message}\"
+
+Determine which scenes and shots must be changed. Modify ONLY what is requested.
+Return a structured PlanEdit JSON.
+"""
+
+        config = types.GenerateContentConfig(
+            system_instruction=(
+                "You are an expert film director and showrunner refining an existing production plan. "
+                "Change ONLY what is requested by the director. List the exact affected shot IDs "
+                "and their updated specifications (visual_prompt, description, camera, or vo_line). "
+                "Do NOT modify unrelated shots."
+            ),
+            temperature=0.4,
+            response_mime_type="application/json",
+            response_schema=PlanEditSchema,
+        )
+
+        def _call_gemini_edit():
+            return client.models.generate_content(
+                model=self.model,
+                contents=[prompt],
+                config=config,
+            )
+
+        resp = await call_with_retry(_call_gemini_edit)
+
+        raw_dict: dict[str, Any] = {}
+        if hasattr(resp, "parsed") and resp.parsed is not None:
+            if isinstance(resp.parsed, BaseModel):
+                raw_dict = resp.parsed.model_dump()
+            elif isinstance(resp.parsed, dict):
+                raw_dict = resp.parsed
+        if not raw_dict and hasattr(resp, "text") and resp.text:
+            raw_dict = json.loads(resp.text)
+
+        updated_shots = [
+            UpdatedShotSpec(
+                id=us.get("id"),
+                visual_prompt=us.get("visual_prompt"),
+                description=us.get("description"),
+                camera=us.get("camera"),
+                vo_line=us.get("vo_line"),
+                duration_s=float(us["duration_s"]) if us.get("duration_s") else None,
+            )
+            for us in raw_dict.get("updated_shots") or []
+            if us.get("id")
+        ]
+
+        style_ch = None
+        if raw_dict.get("style_changes"):
+            sc = raw_dict["style_changes"]
+            style_ch = BibleStyle(
+                palette=sc.get("palette") or plan.bible.style.palette,
+                lighting=sc.get("lighting") or plan.bible.style.lighting,
+                lens=sc.get("lens") or plan.bible.style.lens,
+                mood=sc.get("mood") or plan.bible.style.mood,
+            )
+
+        target_shot_ids = raw_dict.get("target_shot_ids") or [us.id for us in updated_shots]
+        target_scene_ids = raw_dict.get("target_scene_ids") or []
+        if not target_scene_ids and target_shot_ids:
+            for sc in plan.scenes:
+                if any(sh.id in target_shot_ids for sh in sc.shots):
+                    target_scene_ids.append(sc.id)
+
+        return PlanEdit(
+            summary=raw_dict.get("summary") or f"Refined plan based on: {message}",
+            target_scene_ids=target_scene_ids,
+            target_shot_ids=target_shot_ids,
+            updated_shots=updated_shots,
+            style_changes=style_ch,
+            rationale=raw_dict.get("rationale"),
+        )
+
+
+class UpdatedShotSchema(BaseModel):
+    id: str = Field(description="Shot ID, e.g. shot_2_1")
+    visual_prompt: Optional[str] = Field(None, description="Updated visual generative prompt")
+    description: Optional[str] = Field(None, description="Updated description")
+    camera: Optional[str] = Field(None, description="Updated camera movement")
+    vo_line: Optional[str] = Field(None, description="Updated voiceover line if modified")
+    duration_s: Optional[float] = Field(None, description="Updated duration strictly 4, 6, or 8s")
+
+
+class PlanEditSchema(BaseModel):
+    summary: str = Field(description="Clear summary of what was refined")
+    target_scene_ids: List[str] = Field(
+        default_factory=list, description="Scene IDs targeted for refinement, e.g. ['scene_2']"
+    )
+    target_shot_ids: List[str] = Field(
+        default_factory=list,
+        description="List of shot IDs directly modified, e.g. ['shot_2_1', 'shot_2_2']",
+    )
+    updated_shots: List[UpdatedShotSchema] = Field(
+        default_factory=list, description="List of shot modifications"
+    )
+    style_changes: Optional[BibleStyleSchema] = Field(
+        None, description="Optional style bible modifications"
+    )
+    rationale: Optional[str] = Field(
+        None, description="Director rationale for these specific adjustments"
+    )

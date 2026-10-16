@@ -45,9 +45,9 @@ def generate_srt(job: Job, srt_path: Path) -> Path:
     return srt_path
 
 
-async def assemble_video(job: Job, job_dir: Path) -> Tuple[str, str, str]:
+async def assemble_video(job: Job, job_dir: Path, version: int = 1) -> Tuple[str, str, str]:
     """
-    Subprocess FFmpeg pipeline assembling all shots, VO audio, music, and subtitles into final.mp4.
+    Subprocess FFmpeg pipeline assembling all shots, VO audio, music, and subtitles into versioned MP4.
     Returns: (final_video_url, poster_url, captions_srt_url)
     """
     if not job.plan or not job.plan.scenes:
@@ -160,7 +160,10 @@ async def assemble_video(job: Job, job_dir: Path) -> Tuple[str, str, str]:
         if cand_music.exists():
             music_file = cand_music
 
-    final_video = job_dir / "final.mp4"
+    video_filename = f"final_v{version}.mp4" if version > 1 else "final.mp4"
+    poster_filename = f"poster_v{version}.jpg" if version > 1 else "poster.jpg"
+    final_video = job_dir / video_filename
+    poster_jpg = job_dir / poster_filename
 
     # Build audio filter graph
     input_args = ["-i", str(concatenated_video)]
@@ -250,7 +253,6 @@ async def assemble_video(job: Job, job_dir: Path) -> Tuple[str, str, str]:
         await proc_fb.wait()
 
     # 5. Extract poster image
-    poster_jpg = job_dir / "poster.jpg"
     proc_poster = await asyncio.create_subprocess_exec(
         "ffmpeg", "-y",
         "-ss", "00:00:01.00",
@@ -262,6 +264,21 @@ async def assemble_video(job: Job, job_dir: Path) -> Tuple[str, str, str]:
     )
     await proc_poster.wait()
 
+    # Maintain final_v1.mp4 and poster_v1.jpg for version 1
+    import shutil
+    if version <= 1:
+        v1_video = job_dir / "final_v1.mp4"
+        v1_poster = job_dir / "poster_v1.jpg"
+        if not v1_video.exists() and final_video.exists():
+            shutil.copyfile(str(final_video), str(v1_video))
+        if not v1_poster.exists() and poster_jpg.exists():
+            shutil.copyfile(str(poster_jpg), str(v1_poster))
+    else:
+        # Also mirror latest version to final.mp4 and poster.jpg
+        shutil.copyfile(str(final_video), str(job_dir / "final.mp4"))
+        if poster_jpg.exists():
+            shutil.copyfile(str(poster_jpg), str(job_dir / "poster.jpg"))
+
     # Cleanup temporary normalization files to conserve disk
     for norm in normalized_clips:
         try:
@@ -271,8 +288,8 @@ async def assemble_video(job: Job, job_dir: Path) -> Tuple[str, str, str]:
     concatenated_video.unlink(missing_ok=True)
     concat_list_file.unlink(missing_ok=True)
 
-    final_url = f"/media/{job.id}/final.mp4"
-    poster_url = f"/media/{job.id}/poster.jpg"
+    final_url = f"/media/{job.id}/{video_filename}"
+    poster_url = f"/media/{job.id}/{poster_filename}"
     srt_url = f"/media/{job.id}/captions.srt"
 
     return final_url, poster_url, srt_url

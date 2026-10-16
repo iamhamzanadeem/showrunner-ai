@@ -177,6 +177,86 @@ async def test_google_planner_structured_output():
 
 
 @pytest.mark.asyncio
+async def test_google_planner_edit_plan():
+    from app.models import PlanEdit, Scene
+
+    mock_resp = MagicMock()
+    mock_resp.parsed = {
+        "summary": "Director requested warmer tones in scene 1; adjusted lighting and shot 1_1 visual prompt.",
+        "target_scene_ids": ["scene_1"],
+        "target_shot_ids": ["shot_1_1"],
+        "updated_shots": [
+            {
+                "id": "shot_1_1",
+                "visual_prompt": "Warm golden light illuminates the pilot's cockpit",
+                "description": "Cockpit in warm ambient sunlight",
+                "camera": "Close-up",
+                "vo_line": "The jump coordinates are locked.",
+                "duration_s": 6.0,
+            }
+        ],
+        "style_changes": {
+            "palette": ["#1A0B02", "#D97706", "#F59E0B", "#FEF3C7"],
+            "lighting": "Warm golden sunset key light",
+            "lens": "35mm Prime",
+            "mood": "Warm and optimistic",
+        },
+        "rationale": "Applied requested warm palette to scene 1",
+    }
+
+    mock_client = MagicMock()
+    mock_client.models.generate_content.return_value = mock_resp
+
+    plan = Plan(
+        title="Odyssey",
+        logline="A flight across the stars.",
+        mode=VideoMode.ad,
+        target_duration_s=30,
+        total_duration_s=6.0,
+        total_shots=1,
+        bible=Bible(
+            style=BibleStyle(
+                palette=["#000000", "#FFFFFF"],
+                lighting="Cold neon",
+                lens="35mm",
+                mood="Cold",
+            )
+        ),
+        scenes=[
+            Scene(
+                id="scene_1",
+                scene_number=1,
+                title="Cockpit",
+                summary="Entering jump",
+                shots=[
+                    Shot(
+                        id="shot_1_1",
+                        scene_id="scene_1",
+                        duration_s=6.0,
+                        description="Pilot engaging switches",
+                        camera="Close-up",
+                        visual_prompt="Cold cockpit",
+                        status=ShotStatus.passed,
+                    )
+                ],
+            )
+        ],
+    )
+
+    with patch("app.providers.google.planner.get_genai_client", return_value=mock_client):
+        planner = GooglePlannerProvider(api_key="fake-key", model="gemini-3.8-flash")
+        edit = await planner.edit_plan(plan, "Make scene 1 warmer and golden")
+
+        assert isinstance(edit, PlanEdit)
+        assert edit.target_scene_ids == ["scene_1"]
+        assert edit.target_shot_ids == ["shot_1_1"]
+        assert len(edit.updated_shots) == 1
+        assert "Warm golden" in edit.updated_shots[0].visual_prompt
+        assert edit.style_changes is not None
+        assert "#F59E0B" in edit.style_changes.palette
+
+
+@pytest.mark.asyncio
 async def test_google_critic_evaluation(tmp_path: Path):
     dummy_clip = tmp_path / "test_shot.mp4"
     dummy_clip.write_bytes(b"\x00\x00\x00\x18ftypmp42" + b"fake mp4 content" * 10)

@@ -4,6 +4,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const providerName = document.getElementById("provider-name");
   const jobBadge = document.getElementById("job-badge");
   const jobIdText = document.getElementById("job-id-text");
+  const recentJobsSelect = document.getElementById("recent-jobs-select");
 
   const briefForm = document.getElementById("brief-form");
   const briefInput = document.getElementById("brief-input");
@@ -40,6 +41,16 @@ document.addEventListener("DOMContentLoaded", () => {
   const playerPlaceholder = document.getElementById("player-placeholder");
   const playerStatusBadge = document.getElementById("player-status-badge");
   const downloadVideoBtn = document.getElementById("download-video-btn");
+  const versionSelectorWrapper = document.getElementById("version-selector-wrapper");
+  const versionSelect = document.getElementById("version-select");
+
+  const chatRefinementCard = document.getElementById("chat-refinement-card");
+  const chatMessages = document.getElementById("chat-messages");
+  const chatForm = document.getElementById("chat-form");
+  const chatInput = document.getElementById("chat-input");
+  const chatSubmitBtn = document.getElementById("chat-submit-btn");
+  const chatChips = document.querySelectorAll(".chat-chip");
+  const newBriefBtn = document.getElementById("new-brief-btn");
 
   const logContainer = document.getElementById("log-container");
   const clearLogsBtn = document.getElementById("clear-logs-btn");
@@ -48,6 +59,7 @@ document.addEventListener("DOMContentLoaded", () => {
   let activeEventSource = null;
   let stagedFiles = [];
   let currentJobId = null;
+  let currentJob = null;
   let currentPlan = null;
 
   // 1. Fetch Health and Provider Status
@@ -198,7 +210,7 @@ document.addEventListener("DOMContentLoaded", () => {
     currentPlan = plan;
 
     // Header stats
-    planTitle.textContent = plan.title.toUpperCase();
+    planTitle.textContent = (plan.title || "UNTITLED").toUpperCase();
     planLogline.textContent = plan.logline || "";
     planModeBadge.textContent = (plan.mode || "AD").toUpperCase();
 
@@ -279,6 +291,7 @@ document.addEventListener("DOMContentLoaded", () => {
         const shotCard = document.createElement("div");
         shotCard.className = "shot-card";
         shotCard.id = `card-${shot.id}`;
+        shotCard.dataset.shotId = shot.id;
 
         const isChained = shot.chain_from_previous;
         const chainHtml = isChained
@@ -286,18 +299,21 @@ document.addEventListener("DOMContentLoaded", () => {
           : "";
 
         const voHtml = shot.vo_line
-          ? `<div class="shot-vo-box">"${escapeHtml(shot.vo_line)}"</div>`
+          ? `<div class="shot-vo-box" id="vo-${shot.id}">"${escapeHtml(shot.vo_line)}"</div>`
           : "";
 
         const imgHtml = shot.image_url
           ? `<img src="${shot.image_url}" class="shot-img-thumb" alt="${shot.id}">`
           : "";
 
+        const latestAttempt = (shot.attempts && shot.attempts.length) || 1;
+        const lastAtt = shot.attempts && shot.attempts.length ? shot.attempts[shot.attempts.length - 1] : null;
+
         shotCard.innerHTML = `
           <div class="shot-card-header">
             <div style="display:flex; align-items:center; gap:6px;">
               <span class="shot-id">${shot.id.toUpperCase()}</span>
-              <span class="attempt-pill" id="att-badge-${shot.id}">ATTEMPT #1</span>
+              <span class="attempt-pill" id="att-badge-${shot.id}">ATTEMPT #${latestAttempt}</span>
             </div>
             <span class="shot-duration">${shot.duration_s}s</span>
           </div>
@@ -325,6 +341,15 @@ document.addEventListener("DOMContentLoaded", () => {
         `;
 
         grid.appendChild(shotCard);
+
+        if (lastAtt && lastAtt.critique) {
+          updateShotCard(shot.id, {
+            status: shot.status,
+            attempt: latestAttempt,
+            critic: lastAtt.critique,
+            image_url: lastAtt.image_url || shot.image_url,
+          });
+        }
       });
 
       scenesContainer.appendChild(sceneBlock);
@@ -356,7 +381,7 @@ document.addEventListener("DOMContentLoaded", () => {
           img.className = "shot-img-thumb";
           thumbBox.insertBefore(img, thumbBox.firstChild);
         }
-        img.src = data.image_url;
+        img.src = `${data.image_url}?t=${Date.now()}`;
       }
     }
 
@@ -427,7 +452,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
-  // 10. Complete Video Player Setup
+  // 10. Complete Video Player Setup & Version Switcher
   function displayMasterVideo(videoUrl, posterUrl) {
     if (!videoUrl) return;
 
@@ -435,7 +460,7 @@ document.addEventListener("DOMContentLoaded", () => {
     masterVideo.classList.remove("hidden");
     masterVideo.src = videoUrl;
     if (posterUrl) {
-      masterVideo.poster = posterUrl;
+      masterVideo.poster = `${posterUrl}?t=${Date.now()}`;
     }
 
     playerStatusBadge.textContent = "MASTER READY";
@@ -447,7 +472,143 @@ document.addEventListener("DOMContentLoaded", () => {
     downloadVideoBtn.href = videoUrl;
   }
 
-  // 11. Subscribe to SSE events
+  function updateVersionSelector(versions, activeVersionNum) {
+    if (!versions || versions.length <= 1) {
+      versionSelectorWrapper.classList.add("hidden");
+      return;
+    }
+
+    versionSelectorWrapper.classList.remove("hidden");
+    versionSelect.innerHTML = "";
+
+    versions.forEach((v) => {
+      const opt = document.createElement("option");
+      opt.value = v.version;
+      const labelMsg = v.message ? ` - ${v.message.slice(0, 24)}` : "";
+      opt.textContent = `Version ${v.version}${labelMsg}`;
+      if (activeVersionNum ? v.version === activeVersionNum : v.version === versions.length) {
+        opt.selected = true;
+      }
+      versionSelect.appendChild(opt);
+    });
+  }
+
+  versionSelect.addEventListener("change", () => {
+    const chosenVer = parseInt(versionSelect.value, 10);
+    if (currentJob && currentJob.versions) {
+      const found = currentJob.versions.find((v) => v.version === chosenVer);
+      if (found && found.url) {
+        displayMasterVideo(found.url, currentJob.poster_url);
+      }
+    }
+  });
+
+  // 11. Chat History and Refinement Messages
+  function appendChatMessage(role, text) {
+    if (!chatMessages) return;
+    const bubble = document.createElement("div");
+    bubble.className = `chat-bubble ${role === "user" ? "user-bubble" : "agent-bubble"}`;
+    const sender = role === "user" ? "YOU (PRODUCER)" : "DIRECTOR AGENT";
+
+    bubble.innerHTML = `
+      <span class="chat-sender">${sender}</span>
+      <p>${escapeHtml(text)}</p>
+    `;
+
+    chatMessages.appendChild(bubble);
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+  }
+
+  function renderChatHistory(messages) {
+    if (!chatMessages) return;
+    chatMessages.innerHTML = "";
+    if (!messages || messages.length === 0) {
+      appendChatMessage(
+        "agent",
+        "Production complete! Ask me to refine scenes, adjust lighting, change tone, or rewrite dialogue (e.g. 'Make scene 2 warmer')."
+      );
+      return;
+    }
+    messages.forEach((m) => {
+      appendChatMessage(m.role, m.text);
+    });
+  }
+
+  // 12. Recent Productions Loading & Deep-Linking
+  async function loadRecentJobs() {
+    if (!recentJobsSelect) return;
+    try {
+      const res = await fetch("/api/jobs");
+      if (!res.ok) return;
+      const jobs = await res.json();
+      recentJobsSelect.innerHTML = '<option value="">📁 Recent Productions</option>';
+      jobs.forEach((job) => {
+        const opt = document.createElement("option");
+        opt.value = job.id;
+        const title = job.title || (job.brief ? job.brief.substring(0, 28) : job.id);
+        opt.textContent = `${title} (${job.mode || "ad"})`;
+        if (job.id === currentJobId) {
+          opt.selected = true;
+        }
+        recentJobsSelect.appendChild(opt);
+      });
+    } catch (err) {
+      console.warn("Failed to load recent jobs", err);
+    }
+  }
+
+  recentJobsSelect.addEventListener("change", () => {
+    const selectedId = recentJobsSelect.value;
+    if (selectedId) {
+      loadJob(selectedId);
+    }
+  });
+
+  async function loadJob(jobId) {
+    if (!jobId) return;
+    try {
+      const res = await fetch(`/api/jobs/${jobId}`);
+      if (!res.ok) return;
+      const job = await res.json();
+      currentJobId = job.id;
+      currentJob = job;
+
+      window.history.pushState({}, "", `/?job=${job.id}`);
+      jobBadge.classList.remove("hidden");
+      jobIdText.textContent = job.id.toUpperCase();
+
+      if (job.plan) {
+        renderPlan(job.plan);
+      }
+
+      if (job.versions && job.versions.length > 0) {
+        updateVersionSelector(job.versions, job.versions.length);
+      }
+
+      if (job.messages) {
+        renderChatHistory(job.messages);
+      }
+
+      if (job.status === "done") {
+        if (job.final_video_url) {
+          displayMasterVideo(job.final_video_url, job.poster_url);
+        }
+        chatRefinementCard.classList.remove("hidden");
+        updateProgress(100, "Production complete");
+        resetSubmitBtn();
+      } else if (job.status === "failed") {
+        updateProgress(100, "Job failed");
+        resetSubmitBtn();
+      } else {
+        // Active running job -> connect to SSE
+        connectJobEvents(job.id);
+      }
+    } catch (err) {
+      console.error("Error loading job", err);
+    }
+  }
+
+  // 13. Subscribe to SSE events
   function connectJobEvents(jobId) {
     if (activeEventSource) {
       activeEventSource.close();
@@ -502,6 +663,38 @@ document.addEventListener("DOMContentLoaded", () => {
       case "MUSIC":
       case "VO":
         updateProgress(35, "Synthesizing voiceover & score");
+        break;
+
+      case "EDIT":
+        updateProgress(30, "Director re-shooting scene");
+        // Highlight affected shot cards
+        if (data.target_shot_ids && data.target_shot_ids.length) {
+          data.target_shot_ids.forEach((id) => {
+            const card = document.getElementById(`card-${id}`);
+            if (card) {
+              card.classList.add("reshooting");
+              const headerLeft = card.querySelector(".shot-card-header > div");
+              if (headerLeft && !headerLeft.querySelector(".reshooting-badge")) {
+                const b = document.createElement("span");
+                b.className = "reshooting-badge";
+                b.textContent = "RE-SHOOTING";
+                headerLeft.appendChild(b);
+              }
+            }
+          });
+        }
+        // Update updated shots' descriptions / vo lines
+        if (data.updated_shots && data.updated_shots.length) {
+          data.updated_shots.forEach((us) => {
+            const descEl = document.getElementById(`desc-${us.id}`);
+            if (descEl && us.description) descEl.textContent = us.description;
+            const voEl = document.getElementById(`vo-${us.id}`);
+            if (voEl && us.vo_line) voEl.textContent = `"${us.vo_line}"`;
+          });
+        }
+        if (data.summary) {
+          appendChatMessage("agent", data.summary);
+        }
         break;
 
       case "KEYFRAME":
@@ -574,31 +767,48 @@ document.addEventListener("DOMContentLoaded", () => {
 
       case "DONE":
         updateProgress(100, "Production complete");
+        // Clear reshooting badges and classes
+        document.querySelectorAll(".shot-card.reshooting").forEach((c) => c.classList.remove("reshooting"));
+        document.querySelectorAll(".reshooting-badge").forEach((b) => b.remove());
+
         if (data.final_video_url) {
           displayMasterVideo(data.final_video_url, data.poster_url);
         }
+        chatRefinementCard.classList.remove("hidden");
         resetSubmitBtn();
+        resetChatBtn();
+        pollJobStatus(currentJobId);
+        loadRecentJobs();
         break;
 
       case "ERROR":
         updateProgress(100, "Error halted pipeline");
+        document.querySelectorAll(".shot-card.reshooting").forEach((c) => c.classList.remove("reshooting"));
+        document.querySelectorAll(".reshooting-badge").forEach((b) => b.remove());
         resetSubmitBtn();
+        resetChatBtn();
         break;
     }
   }
 
   async function pollJobStatus(jobId) {
+    if (!jobId) return;
     try {
       const res = await fetch(`/api/jobs/${jobId}`);
       if (res.ok) {
         const job = await res.json();
+        currentJob = job;
         if (job.plan && !currentPlan) {
           renderPlan(job.plan);
+        }
+        if (job.versions && job.versions.length) {
+          updateVersionSelector(job.versions, job.versions.length);
         }
         if (job.final_video_url) {
           displayMasterVideo(job.final_video_url, job.poster_url);
           updateProgress(100, "Complete");
           resetSubmitBtn();
+          resetChatBtn();
         }
       }
     } catch (e) {
@@ -618,13 +828,28 @@ document.addEventListener("DOMContentLoaded", () => {
     btnText.textContent = "Run Showrunner Studio";
   }
 
-  // 12. Form Submission
+  function setChatSending() {
+    if (chatSubmitBtn) chatSubmitBtn.disabled = true;
+    if (chatInput) chatInput.disabled = true;
+  }
+
+  function resetChatBtn() {
+    if (chatSubmitBtn) chatSubmitBtn.disabled = false;
+    if (chatInput) {
+      chatInput.disabled = false;
+      chatInput.value = "";
+    }
+  }
+
+  // 14. Initial Brief Form Submission
   briefForm.addEventListener("submit", async (e) => {
     e.preventDefault();
     const brief = briefInput.value.trim();
     if (!brief) return;
 
     setSubmitting();
+    chatRefinementCard.classList.add("hidden");
+    versionSelectorWrapper.classList.add("hidden");
     updateProgress(5, "Initializing production agent");
 
     appendLog("PLAN", `Initiating Showrunner production agent... Mode: ${selectedModeInput.value}`);
@@ -649,6 +874,8 @@ document.addEventListener("DOMContentLoaded", () => {
 
       const jobData = await res.json();
       const jobId = jobData.id || jobData.job_id;
+      window.history.pushState({}, "", `/?job=${jobId}`);
+      loadRecentJobs();
       appendLog("PLAN", `Job created: ${jobId}. Connecting to live agent stream...`);
       connectJobEvents(jobId);
     } catch (err) {
@@ -656,4 +883,88 @@ document.addEventListener("DOMContentLoaded", () => {
       resetSubmitBtn();
     }
   });
+
+  // 15. Chat Refinement Submission
+  async function submitChatInstruction(instruction) {
+    const text = (instruction || (chatInput && chatInput.value) || "").trim();
+    if (!text || !currentJobId) return;
+
+    appendChatMessage("user", text);
+    setChatSending();
+    appendLog("EDIT", `Director instruction received: "${text}"`);
+
+    try {
+      const res = await fetch(`/api/jobs/${currentJobId}/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: text }),
+      });
+
+      if (res.status === 409) {
+        appendChatMessage("agent", "⚠️ The director agent is currently shooting another take. Please wait for it to complete.");
+        resetChatBtn();
+        return;
+      }
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || `Chat failed (${res.status})`);
+      }
+
+      // Reconnect SSE if closed
+      connectJobEvents(currentJobId);
+    } catch (err) {
+      appendChatMessage("agent", `Failed to apply refinement: ${err.message}`);
+      resetChatBtn();
+    }
+  }
+
+  if (chatForm) {
+    chatForm.addEventListener("submit", (e) => {
+      e.preventDefault();
+      submitChatInstruction();
+    });
+  }
+
+  chatChips.forEach((chip) => {
+    chip.addEventListener("click", () => {
+      const prompt = chip.dataset.prompt;
+      if (prompt) {
+        if (chatInput) chatInput.value = prompt;
+        submitChatInstruction(prompt);
+      }
+    });
+  });
+
+  // 16. New Brief Reset
+  if (newBriefBtn) {
+    newBriefBtn.addEventListener("click", () => {
+      currentJobId = null;
+      currentJob = null;
+      currentPlan = null;
+      window.history.pushState({}, "", "/");
+      chatRefinementCard.classList.add("hidden");
+      versionSelectorWrapper.classList.add("hidden");
+      jobBadge.classList.add("hidden");
+      jobIdText.textContent = "IDLE";
+      boardEmpty.classList.remove("hidden");
+      scenesContainer.classList.add("hidden");
+      scenesContainer.innerHTML = "";
+      bibleCard.classList.add("hidden");
+      masterVideo.classList.add("hidden");
+      playerPlaceholder.classList.remove("hidden");
+      downloadVideoBtn.classList.add("hidden");
+      updateProgress(0, "READY");
+      resetSubmitBtn();
+      briefInput.value = "";
+    });
+  }
+
+  // 17. Deep Linking & Initial Load
+  const urlParams = new URLSearchParams(window.location.search);
+  const jobIdParam = urlParams.get("job");
+  if (jobIdParam) {
+    loadJob(jobIdParam);
+  }
+  loadRecentJobs();
 });

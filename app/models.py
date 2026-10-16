@@ -146,6 +146,41 @@ class AgentEvent(BaseModel):
     data: Optional[dict[str, Any]] = None
 
 
+class UpdatedShotSpec(BaseModel):
+    id: str
+    visual_prompt: Optional[str] = None
+    description: Optional[str] = None
+    camera: Optional[str] = None
+    vo_line: Optional[str] = None
+    duration_s: Optional[float] = None
+
+
+class PlanEdit(BaseModel):
+    summary: str
+    target_scene_ids: List[str] = Field(default_factory=list)
+    target_shot_ids: List[str] = Field(default_factory=list)
+    updated_shots: List[UpdatedShotSpec] = Field(default_factory=list)
+    style_changes: Optional[BibleStyle] = None
+    rationale: Optional[str] = None
+
+
+class ChatMessage(BaseModel):
+    role: str = Field(description="'user' or 'agent'")
+    text: str
+    ts: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+
+
+class JobVersion(BaseModel):
+    version: int
+    url: str
+    poster_url: Optional[str] = None
+    message: Optional[str] = None
+    changed_shots: List[str] = Field(default_factory=list)
+    created_at: str = Field(
+        default_factory=lambda: datetime.now(timezone.utc).isoformat()
+    )
+
+
 class Job(BaseModel):
     id: str
     brief: str
@@ -165,12 +200,29 @@ class Job(BaseModel):
     poster_url: Optional[str] = None
     captions_srt_url: Optional[str] = None
     final_video_url: Optional[str] = None
+    messages: List[ChatMessage] = Field(default_factory=list)
+    versions: List[JobVersion] = Field(default_factory=list)
     error: Optional[str] = None
 
 
 class JobCreateRequest(BaseModel):
     brief: str
     mode: VideoMode = VideoMode.ad
+
+
+class ChatRequest(BaseModel):
+    message: str
+
+
+class JobSummaryResponse(BaseModel):
+    id: str
+    title: Optional[str] = None
+    brief: str
+    mode: VideoMode
+    status: JobStatus
+    created_at: str
+    poster_url: Optional[str] = None
+    final_video_url: Optional[str] = None
 
 
 class HealthResponse(BaseModel):

@@ -14,10 +14,12 @@ from app.models import (
     CharacterSpec,
     CritiqueResult,
     Plan,
+    PlanEdit,
     ProductSpec,
     Scene,
     Shot,
     ShotStatus,
+    UpdatedShotSpec,
     VideoMode,
 )
 from app.providers.base import (
@@ -89,7 +91,17 @@ class MockPlannerProvider(BasePlannerProvider):
 
         # Style analysis based on brief text
         lower_brief = brief.lower()
-        if any(w in lower_brief for w in ["cyber", "neon", "tech", "ai", "future", "space"]):
+        if any(w in lower_brief for w in ["chai", "tea", "coffee", "bazaar", "artisan", "islamabad", "lahore", "karachi", "food", "cafe", "brew", "spice", "fragrance"]):
+            palette = ["#260F08", "#C85A17", "#E5A030", "#FBF2E3"]
+            lighting = f"Warm morning sunbeams filtering through rising steam across {secondary_subject}"
+            lens = "85mm f/1.4 portrait glass with creamy organic flare and golden bokeh"
+            mood = f"Aromatic, artisanal, rich cultural heritage of {secondary_subject}"
+            char_name = f"Master {primary_subject}"
+            char_role = "Master Artisan"
+            char_appearance = f"Traditional handcrafted vest, warm welcoming smile, steaming ceramic cups in {secondary_subject}"
+            product_name = f"{primary_subject} Heritage"
+            product_desc = f"Artisanal freshly poured {primary_subject.lower()} served in handcrafted terracotta cups with cardamom aroma"
+        elif any(w in lower_brief for w in ["cyber", "neon", "tech", "ai", "future", "space"]):
             palette = ["#0A0F1D", "#00F0FF", "#7000FF", "#FF007A"]
             lighting = "Atmospheric volumetric neon haze, high contrast deep shadows"
             lens = "Anamorphic 35mm T1.5 with subtle horizontal blue streak flares"
@@ -509,6 +521,110 @@ class MockPlannerProvider(BasePlannerProvider):
             scenes=scenes,
         )
 
+    async def edit_plan(self, plan: Plan, message: str) -> PlanEdit:
+        if settings.MOCK_DELAY_S > 0:
+            await asyncio.sleep(min(0.1, settings.MOCK_DELAY_S))
+
+        lower_msg = message.lower()
+
+        # 1. Target scene identification
+        target_scene = None
+        scene_match = re.search(r"scene\s*(\d+)", lower_msg)
+        shot_match = re.search(r"shot\s*(\d+)[\._](\d+)", lower_msg)
+
+        if scene_match:
+            scene_num = int(scene_match.group(1))
+            for sc in plan.scenes:
+                if sc.scene_number == scene_num:
+                    target_scene = sc
+                    break
+        elif shot_match:
+            s_num = int(shot_match.group(1))
+            for sc in plan.scenes:
+                if sc.scene_number == s_num:
+                    target_scene = sc
+                    break
+
+        if not target_scene:
+            target_scene = plan.scenes[1] if len(plan.scenes) > 1 else plan.scenes[0]
+
+        target_scene_id = target_scene.id
+        target_shot_ids = [s.id for s in target_scene.shots]
+
+        # 2. Extract specific line change if any
+        line_match = re.search(r'(?:change\s+(?:the\s+)?line\s+to|say)\s+["\']([^"\']+)["\']', message, re.IGNORECASE)
+        new_line = line_match.group(1) if line_match else None
+
+        # 3. Determine aesthetic refinement
+        palette_shift = None
+        color_tag = ""
+        summary_tone = "updated"
+
+        if any(w in lower_msg for w in ["warmer", "warm", "amber", "golden", "sun"]):
+            color_tag = "Warmer tone with golden-amber illumination and rich warm palette"
+            palette_shift = ["#260D04", "#D84315", "#FF8F00", "#FFF3E0"]
+            summary_tone = "warmer golden tone"
+        elif any(w in lower_msg for w in ["cooler", "cool", "blue", "teal", "cold", "cyan"]):
+            color_tag = "Cooler tone with crisp cyan rim lighting and cold twilight shadows"
+            palette_shift = ["#020E1A", "#0091EA", "#00E5FF", "#E1F5FE"]
+            summary_tone = "cooler atmospheric blue tone"
+        elif any(w in lower_msg for w in ["darker", "shadow", "noir", "moody"]):
+            color_tag = "Deep chiaroscuro shadows and moody low-key silhouette lighting"
+            palette_shift = ["#050505", "#212121", "#424242", "#FAFAFA"]
+            summary_tone = "darker and moodier visual grade"
+        elif any(w in lower_msg for w in ["brighter", "vibrant", "sunlight", "pop"]):
+            color_tag = "High-key vibrant lighting with vivid color saturation and crisp exposure"
+            palette_shift = ["#1A1A1A", "#FFD600", "#FF1744", "#FFFFFF"]
+            summary_tone = "brighter high-key lighting"
+        elif any(w in lower_msg for w in ["faster", "dynamic", "kinetic", "action"]):
+            color_tag = "Kinetic handheld camera motion with whip pans and high energy pacing"
+            summary_tone = "more kinetic action pacing"
+        elif any(w in lower_msg for w in ["slower", "gentle", "serene", "calm"]):
+            color_tag = "Slow meditative dolly gliding motion with soft dreamy focus"
+            summary_tone = "slower meditative pacing"
+        elif any(w in lower_msg for w in ["dramatic", "epic"]):
+            color_tag = "Monumental low angle framing with sweeping cinematic contrast"
+            summary_tone = "more dramatic cinematic framing"
+        else:
+            color_tag = f"Refined style directive: {message}"
+            summary_tone = "refined visual tone"
+
+        updated_shots: List[UpdatedShotSpec] = []
+        for i, shot in enumerate(target_scene.shots):
+            new_prompt = f"{shot.visual_prompt} | Refinement: {color_tag}"
+            vo = new_line if (new_line and i == 0) else shot.vo_line
+            updated_shots.append(
+                UpdatedShotSpec(
+                    id=shot.id,
+                    visual_prompt=new_prompt,
+                    description=f"{shot.description} ({summary_tone})",
+                    vo_line=vo,
+                )
+            )
+
+        new_style = None
+        if palette_shift:
+            new_style = BibleStyle(
+                palette=palette_shift,
+                lighting=f"Refined: {color_tag}",
+                lens=plan.bible.style.lens,
+                mood=f"{summary_tone.capitalize()}, {plan.bible.style.mood}",
+            )
+
+        summary = (
+            f"Director refinement applied to {target_scene.title} ({target_scene_id}): "
+            f"updated {len(target_shot_ids)} shot(s) with {summary_tone}."
+        )
+
+        return PlanEdit(
+            summary=summary,
+            target_scene_ids=[target_scene_id],
+            target_shot_ids=target_shot_ids,
+            updated_shots=updated_shots,
+            style_changes=new_style,
+            rationale=f"Requested by director: '{message}'",
+        )
+
 
 class MockImageProvider(BaseImageProvider):
     """Generates mock reference sheets and keyframe PNGs using Pillow."""
@@ -579,24 +695,41 @@ class MockImageProvider(BaseImageProvider):
         filename = f"{shot_id or 'shot'}_att{attempt}_keyframe.png"
         out_path = (job_dir or Path("./data")) / filename
 
-        bg_rgb = _hex_to_rgb(style.palette[0] if style.palette else "#0a0f1d")
-        accent_rgb = _hex_to_rgb(style.palette[1] if len(style.palette) > 1 else "#00f0ff")
+        # Vivid gradient background using style palette or prompt refinement tint
+        c1 = _hex_to_rgb(style.palette[0] if style.palette else "#1e293b")
+        c2 = _hex_to_rgb(style.palette[1] if len(style.palette) > 1 else "#3b82f6")
+        lower_prompt = prompt.lower()
+        if "warmer" in lower_prompt or "warm" in lower_prompt:
+            c1 = (90, 30, 10)
+            c2 = (240, 120, 20)
+        elif "cooler" in lower_prompt or "cool" in lower_prompt:
+            c1 = (10, 40, 70)
+            c2 = (0, 180, 230)
 
-        img = Image.new("RGB", (1280, 720), color=bg_rgb)
+        img = Image.new("RGB", (1280, 720), color=c1)
         draw = ImageDraw.Draw(img)
 
+        # Draw smooth vertical color gradient
+        for y_coord in range(0, 720, 2):
+            ratio = y_coord / 720.0
+            r = int(c1[0] * (1 - ratio) + c2[0] * ratio)
+            g = int(c1[1] * (1 - ratio) + c2[1] * ratio)
+            b = int(c1[2] * (1 - ratio) + c2[2] * ratio)
+            draw.line([(0, y_coord), (1280, y_coord)], fill=(r, g, b), width=2)
+
         # Outer framing
-        draw.rectangle([15, 15, 1265, 705], outline=(60, 70, 90), width=2)
+        accent_rgb = (255, 200, 50) if "warm" in lower_prompt else (6, 182, 212)
+        draw.rectangle([15, 15, 1265, 705], outline=accent_rgb, width=2)
 
         # Header tag
-        tag_bg = (245, 158, 11) if attempt > 1 else (6, 182, 212)
-        draw.rectangle([30, 30, 340, 70], fill=tag_bg)
+        tag_bg = (245, 158, 11) if attempt > 1 else accent_rgb
+        draw.rectangle([30, 30, 380, 70], fill=tag_bg)
         draw.text((45, 42), f"SCENE {scene_num} · SHOT {shot_num} · ATTEMPT #{attempt}", fill=(0, 0, 0))
 
-        draw.text((30, 95), f"SHOT ID: {shot_id or 'N/A'}", fill=(148, 163, 184))
+        draw.text((30, 95), f"SHOT ID: {shot_id or 'N/A'}", fill=(240, 240, 250))
 
         # Prompt box
-        draw.rectangle([30, 130, 1250, 240], fill=(16, 20, 32), outline=(40, 50, 75))
+        draw.rectangle([30, 130, 1250, 240], fill=(16, 20, 32), outline=(60, 75, 110))
         draw.text((45, 145), "VISUAL PROMPT BLUEPRINT:", fill=accent_rgb)
         prompt_lines = [prompt[i:i + 85] for i in range(0, min(240, len(prompt)), 85)]
         py = 175
@@ -605,13 +738,13 @@ class MockImageProvider(BaseImageProvider):
             py += 24
 
         # Center watermark box
-        draw.rectangle([440, 320, 840, 480], fill=(20, 25, 40), outline=accent_rgb, width=2)
-        draw.text((490, 380), "SHOWRUNNER KEYFRAME", fill=(255, 255, 255))
-        draw.text((530, 415), f"1280x720 • 24 FPS", fill=(148, 163, 184))
+        draw.rectangle([400, 320, 880, 480], fill=(20, 25, 40), outline=accent_rgb, width=2)
+        draw.text((450, 375), f"SHOWRUNNER // SHOT {shot_id or ''}", fill=(255, 255, 255))
+        draw.text((475, 410), f"1280x720 • 24 FPS • MOOD: {style.mood[:24]}", fill=(180, 195, 215))
 
         # Lighting & lens footer
-        draw.text((30, 640), f"LIGHTING: {style.lighting[:60]}", fill=(148, 163, 184))
-        draw.text((30, 665), f"LENS: {style.lens[:60]}", fill=(148, 163, 184))
+        draw.text((30, 640), f"LIGHTING: {style.lighting[:65]}", fill=(220, 230, 245))
+        draw.text((30, 665), f"LENS: {style.lens[:65]}", fill=(200, 215, 235))
 
         img.save(out_path, "PNG")
         return str(out_path)
@@ -641,16 +774,29 @@ class MockVideoProvider(BaseVideoProvider):
         safe_header = f"Scene {scene_num} - Shot {shot_num} - Attempt {attempt}"
         safe_prompt = re.sub(r"[^a-zA-Z0-9 _\-]", "", prompt[:40])
 
+        lower_prompt = prompt.lower()
+        if "warmer" in lower_prompt or "warm" in lower_prompt:
+            bg = "0x8A2A08"  # rich terracotta amber
+            accent_col = "yellow"
+        elif "cooler" in lower_prompt or "cool" in lower_prompt:
+            bg = "0x0B3C5D"  # deep twilight cyan
+            accent_col = "cyan"
+        else:
+            bg_colors = ["0x1A2844", "0x2D1B18", "0x183022", "0x321644"]
+            bg = bg_colors[(scene_num + shot_num) % len(bg_colors)]
+            accent_col = "yellow"
+
         if initial_frame and Path(initial_frame).exists():
-            # Continuity chaining: animate from initial frame
+            # Continuity chaining: animate from initial frame with subtle zoompan motion
             cmd = [
                 "ffmpeg", "-y",
                 "-loop", "1",
                 "-i", str(initial_frame),
                 "-t", dur_str,
                 "-vf", (
-                    f"scale=1280:720,drawtext=text='{safe_header} [CHAINED]':x=40:y=40:fontsize=28:fontcolor=white:box=1:boxcolor=black@0.6:boxborderw=6,"
-                    f"drawtext=text='{safe_prompt}':x=40:y=80:fontsize=20:fontcolor=yellow:box=1:boxcolor=black@0.6:boxborderw=4"
+                    f"scale=1280:720,zoompan=z='min(zoom+0.0008,1.05)':d=1:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=1280x720,"
+                    f"drawtext=text='{safe_header} [CHAINED]':x=40:y=40:fontsize=28:fontcolor=white:box=1:boxcolor=black@0.6:boxborderw=6,"
+                    f"drawtext=text='{safe_prompt}':x=40:y=80:fontsize=20:fontcolor={accent_col}:box=1:boxcolor=black@0.6:boxborderw=4"
                 ),
                 "-c:v", "libx264",
                 "-pix_fmt", "yuv420p",
@@ -658,16 +804,14 @@ class MockVideoProvider(BaseVideoProvider):
                 str(out_path),
             ]
         else:
-            # Standalone visual shot
-            bg_colors = ["0x0a0f1d", "0x1b3b2b", "0x09090b", "0x1e1b4b"]
-            bg = bg_colors[(scene_num + shot_num) % len(bg_colors)]
+            # Standalone visual shot with vivid colored background and clear labels
             cmd = [
                 "ffmpeg", "-y",
                 "-f", "lavfi",
                 "-i", f"color=c={bg}:s=1280x720:d={dur_str}:r=24",
                 "-vf", (
                     f"drawtext=text='{safe_header}':x=40:y=40:fontsize=28:fontcolor=white:box=1:boxcolor=black@0.6:boxborderw=6,"
-                    f"drawtext=text='{safe_prompt}':x=40:y=80:fontsize=20:fontcolor=yellow:box=1:boxcolor=black@0.6:boxborderw=4"
+                    f"drawtext=text='{safe_prompt}':x=40:y=80:fontsize=20:fontcolor={accent_col}:box=1:boxcolor=black@0.6:boxborderw=4"
                 ),
                 "-c:v", "libx264",
                 "-pix_fmt", "yuv420p",

@@ -4,7 +4,7 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import List, Optional
 from pydantic import BaseModel
-from app.models import Bible, BibleStyle, CritiqueResult, Plan, Shot, VideoMode
+from app.models import Bible, BibleStyle, CritiqueResult, Plan, PlanEdit, Shot, VideoMode
 
 
 class BasePlannerProvider(ABC):
@@ -18,6 +18,15 @@ class BasePlannerProvider(ABC):
         ref_images: Optional[List[str]] = None,
     ) -> Plan:
         """Generates script, scenes, shot list with durations, and style/character bible."""
+        pass
+
+    @abstractmethod
+    async def edit_plan(
+        self,
+        plan: Plan,
+        message: str,
+    ) -> PlanEdit:
+        """Refines existing production plan based on director instructions, returning targeted diffs."""
         pass
 
 

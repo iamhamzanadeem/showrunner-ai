@@ -10,10 +10,14 @@ from typing import Optional
 from app.config import settings
 from app.events import event_bus
 from app.models import (
+    ChatMessage,
     Job,
     JobStatus,
+    JobVersion,
+    PlanEdit,
     ShotAttempt,
     ShotStatus,
+    UpdatedShotSpec,
 )
 from app.pipeline.assembler import assemble_video
 from app.pipeline.planner import run_planner, save_job_state
@@ -347,12 +351,25 @@ async def run_pipeline(job: Job) -> None:
             message=f"Beginning master assembly: concatenating {plan.total_shots} clips, burning captions, mixing VO & score...",
         )
 
-        final_url, poster_url, srt_url = await assemble_video(job, job_dir)
+        final_url, poster_url, srt_url = await assemble_video(job, job_dir, version=1)
 
         job.final_video_url = final_url
         job.poster_url = poster_url
         job.captions_srt_url = srt_url
         job.status = JobStatus.completed
+
+        # Record initial version 1 if not present
+        if not job.versions:
+            job.versions.append(
+                JobVersion(
+                    version=1,
+                    url=final_url,
+                    poster_url=poster_url,
+                    message="Initial production cut",
+                    changed_shots=[s.id for sc in plan.scenes for s in sc.shots],
+                    created_at=datetime.now(timezone.utc).isoformat(),
+                )
+            )
         save_job_state(job)
 
         await event_bus.publish(
@@ -360,6 +377,7 @@ async def run_pipeline(job: Job) -> None:
             step="DONE",
             message=f"Master video production complete! Video assembly available at {final_url}",
             data={
+                "version": 1,
                 "final_video_url": final_url,
                 "poster_url": poster_url,
                 "captions_srt_url": srt_url,
@@ -376,5 +394,321 @@ async def run_pipeline(job: Job) -> None:
             job_id=job.id,
             step="ERROR",
             message=f"Pipeline execution halted: {str(exc)}",
+        )
+        raise
+
+
+async def run_refinement(job: Job, user_message: str) -> None:
+    """
+    Executes a targeted refinement on a completed job:
+    1. Requests PlanEdit from planner editor.
+    2. Modifies affected shots' visual prompts, VO, or camera.
+    3. Reshoots ONLY affected shots (plus any chained follow-up shots in the same scene).
+    4. Re-assembles new versioned output final_v{N}.mp4 and emits events.
+    """
+    job_dir = settings.get_job_dir(job.id)
+    providers = get_providers()
+
+    try:
+        if not job.plan:
+            raise ValueError(f"Job {job.id} has no production plan to refine.")
+
+        job.status = JobStatus.generating
+        save_job_state(job)
+
+        # 1. Ask planner editor for targeted edits
+        edit: PlanEdit = await providers.planner.edit_plan(job.plan, user_message)
+
+        if edit.style_changes:
+            job.plan.bible.style = edit.style_changes
+
+        updates_by_id = {u.id: u for u in edit.updated_shots}
+        affected_shot_ids = set(edit.target_shot_ids) | set(updates_by_id.keys())
+
+        if not affected_shot_ids and edit.target_scene_ids:
+            for sc in job.plan.scenes:
+                if sc.id in edit.target_scene_ids:
+                    for sh in sc.shots:
+                        affected_shot_ids.add(sh.id)
+
+        if not affected_shot_ids and job.plan.scenes:
+            for sh in job.plan.scenes[0].shots:
+                affected_shot_ids.add(sh.id)
+
+        # Continuity chaining check within scene:
+        # If shot k is regenerated and shot k+1 chains from it, also regenerate k+1!
+        for scene in job.plan.scenes:
+            for idx in range(len(scene.shots) - 1):
+                cur_shot = scene.shots[idx]
+                nxt_shot = scene.shots[idx + 1]
+                if cur_shot.id in affected_shot_ids and nxt_shot.chain_from_previous:
+                    if nxt_shot.id not in affected_shot_ids:
+                        affected_shot_ids.add(nxt_shot.id)
+                        await event_bus.publish(
+                            job_id=job.id,
+                            step="CHAIN",
+                            message=f"Continuity chain: {nxt_shot.id} marked for reshoot because prior shot {cur_shot.id} is being reshot",
+                            shot_id=nxt_shot.id,
+                            scene_id=scene.id,
+                        )
+
+        # Publish EDIT SSE event
+        await event_bus.publish(
+            job_id=job.id,
+            step="EDIT",
+            message=f"Plan refinement accepted: {edit.summary}",
+            data={
+                "summary": edit.summary,
+                "target_scene_ids": edit.target_scene_ids,
+                "affected_shot_ids": sorted(list(affected_shot_ids)),
+                "rationale": edit.rationale,
+            },
+        )
+
+        # Record agent message in chat thread
+        agent_msg = f"{edit.summary} Re-shooting shot(s): {', '.join(sorted(affected_shot_ids))}."
+        job.messages.append(
+            ChatMessage(
+                role="agent",
+                text=agent_msg,
+            )
+        )
+        save_job_state(job)
+
+        # 2. Update shot metadata and regenerate VO if line changed
+        for scene in job.plan.scenes:
+            for shot in scene.shots:
+                if shot.id in updates_by_id:
+                    spec = updates_by_id[shot.id]
+                    if spec.visual_prompt:
+                        shot.visual_prompt = spec.visual_prompt
+                    if spec.description:
+                        shot.description = spec.description
+                    if spec.camera:
+                        shot.camera = spec.camera
+                    if spec.duration_s:
+                        shot.duration_s = spec.duration_s
+                    if spec.vo_line is not None and spec.vo_line != shot.vo_line:
+                        shot.vo_line = spec.vo_line
+                        await event_bus.publish(
+                            job_id=job.id,
+                            step="VO",
+                            message=f"Re-synthesizing voiceover for {shot.id}: \"{shot.vo_line[:50]}...\"",
+                            shot_id=shot.id,
+                            scene_id=scene.id,
+                        )
+                        vo_path = await providers.tts.generate_voiceover(
+                            text=shot.vo_line,
+                            duration_s=shot.duration_s,
+                            job_dir=job_dir,
+                            shot_id=shot.id,
+                        )
+                        shot.audio_url = str(vo_path)
+
+        save_job_state(job)
+
+        # 3. Reshoot only affected shots in each scene
+        for scene in job.plan.scenes:
+            scene_affected = [s for s in scene.shots if s.id in affected_shot_ids]
+            if not scene_affected:
+                continue
+
+            last_clip_path = None
+            prev_shot_id = None
+
+            for s_idx, shot in enumerate(scene.shots):
+                if shot.id not in affected_shot_ids:
+                    if shot.video_url and Path(shot.video_url).exists():
+                        last_clip_path = Path(shot.video_url)
+                        prev_shot_id = shot.id
+                    continue
+
+                shot.status = ShotStatus.generating
+                save_job_state(job)
+
+                # Frame Chaining Check
+                first_frame_path = None
+                if shot.chain_from_previous and last_clip_path and last_clip_path.exists():
+                    first_frame_path = job_dir / f"{prev_shot_id}_lastframe.png"
+                    await extract_last_frame(last_clip_path, first_frame_path)
+                    shot.first_frame_url = f"/media/{job.id}/{first_frame_path.name}"
+                    shot.chained_from_shot_id = prev_shot_id
+                    await event_bus.publish(
+                        job_id=job.id,
+                        step="CHAIN",
+                        message=f"Continuity chain locked: {shot.id} first frame derived from {prev_shot_id} last frame",
+                        shot_id=shot.id,
+                        scene_id=scene.id,
+                    )
+
+                # Critic & Generation Retry Loop
+                attempt = len(shot.attempts) + 1
+                max_attempts = attempt + settings.MAX_RETRIES
+                best_critique = None
+                best_clip_path = None
+                best_keyframe_url = None
+
+                while attempt <= max_attempts:
+                    await event_bus.publish(
+                        job_id=job.id,
+                        step="KEYFRAME",
+                        message=f"Re-generating keyframe for {shot.id} (Attempt #{attempt})...",
+                        shot_id=shot.id,
+                        scene_id=scene.id,
+                        data={"attempt": attempt, "prompt": shot.visual_prompt},
+                    )
+
+                    kf_path = await providers.image.generate_keyframe(
+                        prompt=shot.visual_prompt,
+                        style=job.plan.bible.style,
+                        ref_image=shot.first_frame_url,
+                        job_dir=job_dir,
+                        shot_id=shot.id,
+                        scene_num=scene.scene_number,
+                        shot_num=s_idx + 1,
+                        attempt=attempt,
+                    )
+                    keyframe_rel_url = f"/media/{job.id}/{Path(kf_path).name}"
+                    shot.image_url = keyframe_rel_url
+
+                    await event_bus.publish(
+                        job_id=job.id,
+                        step="GEN",
+                        message=f"Re-rendering clip for {shot.id} ({shot.duration_s:.1f}s, Attempt #{attempt})...",
+                        shot_id=shot.id,
+                        scene_id=scene.id,
+                        data={"attempt": attempt, "duration_s": shot.duration_s},
+                    )
+
+                    clip_path_str = await providers.video.generate_clip(
+                        prompt=shot.visual_prompt,
+                        duration_s=shot.duration_s,
+                        initial_frame=str(first_frame_path) if first_frame_path and first_frame_path.exists() else None,
+                        job_dir=job_dir,
+                        shot_id=shot.id,
+                        scene_num=scene.scene_number,
+                        shot_num=s_idx + 1,
+                        attempt=attempt,
+                    )
+                    clip_path = Path(clip_path_str)
+                    clip_rel_url = f"/media/{job.id}/{clip_path.name}"
+                    shot.video_url = str(clip_path)
+
+                    shot.status = ShotStatus.critiquing
+                    save_job_state(job)
+
+                    critique = await providers.critic.critique_clip(
+                        video_path=str(clip_path),
+                        shot=shot,
+                        bible=job.plan.bible,
+                        attempt=attempt,
+                    )
+                    shot.last_critique = critique
+
+                    shot_attempt = ShotAttempt(
+                        attempt_number=attempt,
+                        prompt=shot.visual_prompt,
+                        image_url=keyframe_rel_url,
+                        clip_url=clip_rel_url,
+                        critique=critique,
+                    )
+                    shot.attempts.append(shot_attempt)
+
+                    if best_critique is None or critique.score > best_critique.score:
+                        best_critique = critique
+                        best_clip_path = clip_path
+                        best_keyframe_url = keyframe_rel_url
+
+                    if critique.passed:
+                        shot.status = ShotStatus.passed
+                        shot.best_critique = critique
+                        await event_bus.publish(
+                            job_id=job.id,
+                            step="CRITIC_PASS",
+                            message=f"Critic PASSED {shot.id} (Score: {critique.score:.2f})",
+                            shot_id=shot.id,
+                            scene_id=scene.id,
+                        )
+                        break
+                    else:
+                        if attempt < max_attempts:
+                            shot.status = ShotStatus.retrying
+                            shot.retry_count += 1
+                            fix = critique.suggested_prompt_fix or "Improve visual fidelity"
+                            shot.prompt_history.append(shot.visual_prompt)
+                            shot.visual_prompt = f"{shot.visual_prompt} | Correction: {fix}"
+                            await event_bus.publish(
+                                job_id=job.id,
+                                step="CRITIC_FAIL",
+                                message=f"Critic REJECTED {shot.id} (Score: {critique.score:.2f}). Retrying...",
+                                shot_id=shot.id,
+                                scene_id=scene.id,
+                            )
+                            attempt += 1
+                            save_job_state(job)
+                        else:
+                            shot.status = ShotStatus.passed
+                            shot.is_flagged_fallback = True
+                            shot.best_critique = best_critique
+                            shot.video_url = str(best_clip_path)
+                            shot.image_url = best_keyframe_url
+                            break
+
+                last_clip_path = Path(shot.video_url)
+                prev_shot_id = shot.id
+                save_job_state(job)
+
+        # 4. Master Assembly for new version
+        next_version = len(job.versions) + 1
+        job.status = JobStatus.assembling
+        save_job_state(job)
+
+        await event_bus.publish(
+            job_id=job.id,
+            step="ASSEMBLE",
+            message=f"Re-assembling production version v{next_version}...",
+        )
+
+        final_url, poster_url, srt_url = await assemble_video(job, job_dir, version=next_version)
+
+        job.final_video_url = final_url
+        job.poster_url = poster_url
+        job.captions_srt_url = srt_url
+        job.status = JobStatus.completed
+
+        # Record version
+        job.versions.append(
+            JobVersion(
+                version=next_version,
+                url=final_url,
+                poster_url=poster_url,
+                message=user_message,
+                changed_shots=sorted(list(affected_shot_ids)),
+                created_at=datetime.now(timezone.utc).isoformat(),
+            )
+        )
+        save_job_state(job)
+
+        await event_bus.publish(
+            job_id=job.id,
+            step="DONE",
+            message=f"Version v{next_version} complete! Video available at {final_url}",
+            data={
+                "version": next_version,
+                "final_video_url": final_url,
+                "poster_url": poster_url,
+                "changed_shots": sorted(list(affected_shot_ids)),
+            },
+        )
+
+    except Exception as exc:
+        logger.exception("Error in refinement orchestration for job %s", job.id)
+        job.status = JobStatus.completed
+        job.error = str(exc)
+        save_job_state(job)
+        await event_bus.publish(
+            job_id=job.id,
+            step="ERROR",
+            message=f"Refinement failed: {str(exc)}",
         )
         raise
