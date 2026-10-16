@@ -1,0 +1,40 @@
+# Environment and virtualenvs
+.venv/
+env/
+venv/
+ENV/
+
+# Data and artifacts storage
+data/
+media/
+*.mp4
+*.png
+*.jpg
+*.jpeg
+*.wav
+*.mp3
+
+# Python cache and bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Testing & linting
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# IDE and OS files
+.vscode/
+.idea/
+.DS_Store
+*.swp
+*.swo
+
+# Local environment configuration
+.env
+.env.local

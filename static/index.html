@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Showrunner AI — Autonomous Agentic Video Production</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="app-layout">
+    <!-- Header -->
+    <header class="app-header">
+      <div class="brand">
+        <div class="logo-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="2" y="2" width="20" height="20" rx="2.18" ry="2.18"></rect>
+            <line x1="7" y1="2" x2="7" y2="22"></line>
+            <line x1="17" y1="2" x2="17" y2="22"></line>
+            <line x1="2" y1="12" x2="22" y2="12"></line>
+            <line x1="2" y1="7" x2="7" y2="7"></line>
+            <line x1="2" y1="17" x2="7" y2="17"></line>
+            <line x1="17" y1="17" x2="22" y2="17"></line>
+            <line x1="17" y1="7" x2="22" y2="7"></line>
+          </svg>
+        </div>
+        <div class="brand-text">
+          <div class="title-row">
+            <h1>SHOWRUNNER<span class="highlight">.AI</span></h1>
+            <span class="version-tag">M1</span>
+          </div>
+          <span class="subtitle">Autonomous AI Video Studio</span>
+        </div>
+      </div>
+
+      <div class="header-actions">
+        <div id="job-badge" class="badge badge-job hidden">
+          <span class="dot"></span>
+          <span id="job-id-text">IDLE</span>
+        </div>
+        <div id="provider-badge" class="badge badge-mock">
+          <span class="icon">⚡</span>
+          <span id="provider-name">CONNECTING...</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- Main 3-column workspace -->
+    <main class="workspace-grid">
+      
+      <!-- LEFT COLUMN: Brief & Directives -->
+      <section class="panel panel-left">
+        <div class="panel-header">
+          <div class="panel-title">
+            <svg class="panel-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+            </svg>
+            <h2>CREATIVE BRIEF</h2>
+          </div>
+          <span class="panel-tag">DIRECTOR</span>
+        </div>
+
+        <form id="brief-form" class="panel-content">
+          <!-- Production Mode Selector -->
+          <div class="control-group">
+            <label class="section-label">PRODUCTION MODE</label>
+            <div class="mode-toggle-group">
+              <button type="button" class="mode-btn active" data-mode="ad">
+                <div class="mode-btn-content">
+                  <span class="mode-title">⚡ High-Impact Ad</span>
+                  <span class="mode-sub">30–45s • ~5 shots • 2-3 scenes</span>
+                </div>
+              </button>
+              <button type="button" class="mode-btn" data-mode="short_film">
+                <div class="mode-btn-content">
+                  <span class="mode-title">🎬 Short Film</span>
+                  <span class="mode-sub">~150s • ~18 shots • 5 scenes</span>
+                </div>
+              </button>
+            </div>
+            <input type="hidden" id="selected-mode" name="mode" value="ad">
+          </div>
+
+          <!-- Creative Brief Textarea -->
+          <div class="control-group">
+            <div class="label-row">
+              <label for="brief-input" class="section-label">VISION & NARRATIVE</label>
+              <span class="char-hint">Prompts planner agent</span>
+            </div>
+            <textarea
+              id="brief-input"
+              name="brief"
+              rows="5"
+              placeholder="Describe your film or commercial. E.g.: 'A neon-lit cyberpunk commercial for an ultra-fast quantum energy drink called Kinetic Zero, starring a lone runner traversing rain-slicked skyscrapers.'"
+              required
+            ></textarea>
+            
+            <!-- Quick Suggestion Chips -->
+            <div class="preset-chips">
+              <button type="button" class="chip" data-preset="ad-cyberpunk">⚡ Cyberpunk Ad</button>
+              <button type="button" class="chip" data-preset="ad-luxury">⌚ Luxury Watch</button>
+              <button type="button" class="chip" data-preset="film-scifi">🚀 Sci-Fi Odyssey</button>
+            </div>
+          </div>
+
+          <!-- Reference Images Upload (Optional Logo / Character / Product) -->
+          <div class="control-group">
+            <label class="section-label">REFERENCE ASSETS (OPTIONAL)</label>
+            <div class="upload-dropzone" id="upload-zone">
+              <input type="file" id="file-input" name="ref_images" accept="image/*" multiple class="file-input">
+              <div class="dropzone-content">
+                <svg class="upload-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                  <polyline points="17 8 12 3 7 8"></polyline>
+                  <line x1="12" y1="3" x2="12" y2="15"></line>
+                </svg>
+                <span class="upload-text">Drop logo, product, or character reference</span>
+                <span class="upload-sub">PNG, JPG, WEBP up to 10MB</span>
+              </div>
+            </div>
+            <div id="file-preview-list" class="file-preview-list"></div>
+          </div>
+
+          <!-- Submit Button -->
+          <div class="action-footer">
+            <button type="submit" id="submit-btn" class="btn btn-primary">
+              <span class="btn-spinner hidden" id="btn-spinner"></span>
+              <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polygon points="5 3 19 12 5 21 5 3"></polygon>
+              </svg>
+              <span id="btn-text">Generate Production Plan</span>
+            </button>
+          </div>
+        </form>
+
+        <!-- Dynamic Style & Character Bible Card -->
+        <div id="bible-card" class="bible-card hidden">
+          <div class="bible-header">
+            <h3>VISUAL & CHARACTER BIBLE</h3>
+            <span class="badge badge-subtle">LOCKED</span>
+          </div>
+          <div class="bible-body">
+            <div class="bible-section">
+              <span class="bible-key">COLOR PALETTE</span>
+              <div id="palette-swatches" class="palette-swatches"></div>
+            </div>
+            <div class="bible-section">
+              <span class="bible-key">LIGHTING & LENS</span>
+              <p id="bible-lighting" class="bible-val"></p>
+              <p id="bible-lens" class="bible-val text-muted"></p>
+            </div>
+            <div class="bible-section">
+              <span class="bible-key">CHARACTERS & PRODUCTS</span>
+              <div id="bible-entities" class="bible-entities"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- CENTRE COLUMN: Scene Board & Video Assembly Player -->
+      <section class="panel panel-center">
+        <!-- Top Board Bar -->
+        <div class="board-topbar">
+          <div class="plan-meta">
+            <div class="plan-title-wrapper">
+              <h2 id="plan-title">AWAITING PRODUCTION BRIEF</h2>
+              <span id="plan-mode-badge" class="badge badge-mode">STANDBY</span>
+            </div>
+            <p id="plan-logline">Submit a brief to synthesize script, visual bible, and continuous shot lists.</p>
+          </div>
+          <div class="board-stats">
+            <div class="stat-pill">
+              <span class="stat-label">SCENES</span>
+              <span class="stat-value" id="stat-scenes">—</span>
+            </div>
+            <div class="stat-pill">
+              <span class="stat-label">SHOTS</span>
+              <span class="stat-value" id="stat-shots">—</span>
+            </div>
+            <div class="stat-pill">
+              <span class="stat-label">DURATION</span>
+              <span class="stat-value" id="stat-duration">—</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Scene Board Scroll Area -->
+        <div class="scene-board" id="scene-board">
+          <div class="board-empty-state" id="board-empty">
+            <div class="empty-icon-box">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                <rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect>
+                <line x1="8" y1="21" x2="16" y2="21"></line>
+                <line x1="12" y1="17" x2="12" y2="21"></line>
+              </svg>
+            </div>
+            <h3>No Active Production Plan</h3>
+            <p>Select a mode, enter your creative vision, and let the agent plan scenes and continuous shot sequences.</p>
+          </div>
+          <div id="scenes-container" class="scenes-container hidden"></div>
+        </div>
+
+        <!-- Master Video Player Container (Bottom of Center) -->
+        <div class="master-player-card">
+          <div class="player-header">
+            <div class="player-title-row">
+              <svg class="player-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polygon points="5 3 19 12 5 21 5 3"></polygon>
+              </svg>
+              <span>MASTER VIDEO ASSEMBLY</span>
+            </div>
+            <span class="badge badge-player-status" id="player-status-badge">STANDBY</span>
+          </div>
+          <div class="player-viewport">
+            <div class="player-placeholder">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" class="placeholder-film-icon">
+                <circle cx="12" cy="12" r="10"></circle>
+                <polygon points="10 8 16 12 10 16 10 8"></polygon>
+              </svg>
+              <p>FFmpeg video assembly pipeline will render here upon completion of shot synthesis and critique loops.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- RIGHT COLUMN: Agent Cognition Stream (Live SSE Logs) -->
+      <section class="panel panel-right">
+        <div class="panel-header">
+          <div class="panel-title">
+            <div class="agent-pulse"></div>
+            <h2>AGENT LOG</h2>
+          </div>
+          <div class="log-controls">
+            <button type="button" id="clear-logs-btn" class="btn-ghost" title="Clear terminal">CLEAR</button>
+            <label class="autoscroll-toggle">
+              <input type="checkbox" id="autoscroll-check" checked>
+              <span>AUTO</span>
+            </label>
+          </div>
+        </div>
+
+        <div class="log-container" id="log-container">
+          <div class="log-entry log-INFO">
+            <div class="log-meta">
+              <span class="log-tag tag-INFO">SYS</span>
+              <span class="log-time">INITIALIZED</span>
+            </div>
+            <div class="log-message">Showrunner AI agent online. Event bus ready.</div>
+          </div>
+        </div>
+      </section>
+
+    </main>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
