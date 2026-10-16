@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import List, Optional
 from pydantic import BaseModel
 from app.models import Bible, BibleStyle, CritiqueResult, Plan, Shot, VideoMode
@@ -29,10 +30,25 @@ class BaseImageProvider(ABC):
         prompt: str,
         style: BibleStyle,
         ref_image: Optional[str] = None,
-        job_dir: Optional[str] = None,
+        job_dir: Optional[Path] = None,
         shot_id: Optional[str] = None,
+        scene_num: int = 1,
+        shot_num: int = 1,
+        attempt: int = 1,
     ) -> str:
         """Generates a keyframe image and returns the local file path or URL."""
+        pass
+
+    @abstractmethod
+    async def generate_ref_sheet(
+        self,
+        entity_type: str,
+        name: str,
+        description: str,
+        style: BibleStyle,
+        job_dir: Path,
+    ) -> str:
+        """Generates a reference sheet image for a character or product."""
         pass
 
 
@@ -43,10 +59,13 @@ class BaseVideoProvider(ABC):
     async def generate_clip(
         self,
         prompt: str,
-        initial_frame: Optional[str] = None,
         duration_s: float = 8.0,
-        job_dir: Optional[str] = None,
+        initial_frame: Optional[str] = None,
+        job_dir: Optional[Path] = None,
         shot_id: Optional[str] = None,
+        scene_num: int = 1,
+        shot_num: int = 1,
+        attempt: int = 1,
     ) -> str:
         """Generates a video clip and returns the local file path or URL."""
         pass
@@ -61,6 +80,7 @@ class BaseCriticProvider(ABC):
         video_path: str,
         shot: Shot,
         bible: Bible,
+        attempt: int = 1,
     ) -> CritiqueResult:
         """Evaluates video clip against shot specification and visual bible."""
         pass
@@ -73,8 +93,9 @@ class BaseTTSProvider(ABC):
     async def generate_voiceover(
         self,
         text: str,
+        duration_s: Optional[float] = None,
         voice_name: Optional[str] = None,
-        job_dir: Optional[str] = None,
+        job_dir: Optional[Path] = None,
         shot_id: Optional[str] = None,
     ) -> str:
         """Synthesizes voiceover audio and returns the local file path or URL."""
@@ -89,7 +110,7 @@ class BaseMusicProvider(ABC):
         self,
         prompt: str,
         duration_s: float,
-        job_dir: Optional[str] = None,
+        job_dir: Optional[Path] = None,
     ) -> str:
         """Generates background music track and returns the local file path or URL."""
         pass

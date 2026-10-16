@@ -25,11 +25,21 @@ document.addEventListener("DOMContentLoaded", () => {
   const boardEmpty = document.getElementById("board-empty");
   const scenesContainer = document.getElementById("scenes-container");
 
+  const progressFill = document.getElementById("progress-fill");
+  const progressStepText = document.getElementById("progress-step-text");
+  const progressPctText = document.getElementById("progress-pct-text");
+
   const bibleCard = document.getElementById("bible-card");
   const paletteSwatches = document.getElementById("palette-swatches");
   const bibleLighting = document.getElementById("bible-lighting");
   const bibleLens = document.getElementById("bible-lens");
   const bibleEntities = document.getElementById("bible-entities");
+  const refSheetThumbnails = document.getElementById("ref-sheet-thumbnails");
+
+  const masterVideo = document.getElementById("master-video");
+  const playerPlaceholder = document.getElementById("player-placeholder");
+  const playerStatusBadge = document.getElementById("player-status-badge");
+  const downloadVideoBtn = document.getElementById("download-video-btn");
 
   const logContainer = document.getElementById("log-container");
   const clearLogsBtn = document.getElementById("clear-logs-btn");
@@ -37,6 +47,8 @@ document.addEventListener("DOMContentLoaded", () => {
 
   let activeEventSource = null;
   let stagedFiles = [];
+  let currentJobId = null;
+  let currentPlan = null;
 
   // 1. Fetch Health and Provider Status
   async function checkHealth() {
@@ -109,7 +121,7 @@ document.addEventListener("DOMContentLoaded", () => {
     stagedFiles.forEach((f, idx) => {
       const tag = document.createElement("span");
       tag.className = "preview-tag";
-      tag.innerHTML = `<span>📎 ${f.name}</span> <button type="button" class="btn-ghost" data-idx="${idx}">×</button>`;
+      tag.innerHTML = `<span>📎 ${escapeHtml(f.name)}</span> <button type="button" class="btn-ghost" data-idx="${idx}">×</button>`;
       tag.querySelector("button").addEventListener("click", (e) => {
         e.stopPropagation();
         stagedFiles.splice(idx, 1);
@@ -119,7 +131,17 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 
-  // 5. Append Log Entries
+  // 5. Progress Bar Updater
+  function updateProgress(pct, label) {
+    const clamped = Math.max(0, Math.min(100, Math.round(pct)));
+    progressFill.style.width = `${clamped}%`;
+    progressPctText.textContent = `${clamped}%`;
+    if (label) {
+      progressStepText.textContent = label.toUpperCase();
+    }
+  }
+
+  // 6. Append Log Entries
   function appendLog(step, message, timestamp) {
     const entry = document.createElement("div");
     const safeStep = (step || "INFO").replace(/\s+/g, "_");
@@ -144,6 +166,7 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   function escapeHtml(text) {
+    if (text === null || text === undefined) return "";
     const div = document.createElement("div");
     div.textContent = text;
     return div.innerHTML;
@@ -153,15 +176,31 @@ document.addEventListener("DOMContentLoaded", () => {
     logContainer.innerHTML = "";
   });
 
-  // 6. Render Plan to Board
+  // 7. Render Reference Sheets
+  function addReferenceSheetThumb(name, type, url) {
+    if (!refSheetThumbnails) return;
+    const existing = document.getElementById(`ref-sheet-${name}`);
+    if (existing) return;
+
+    const card = document.createElement("div");
+    card.id = `ref-sheet-${name}`;
+    card.className = "ref-sheet-card";
+    card.innerHTML = `
+      <img src="${url}" alt="${escapeHtml(name)}" onerror="this.style.display='none'">
+      <div class="ref-sheet-card-title">${escapeHtml(name)} (${type})</div>
+    `;
+    refSheetThumbnails.appendChild(card);
+  }
+
+  // 8. Render Plan to Board
   function renderPlan(plan) {
     if (!plan) return;
+    currentPlan = plan;
 
     // Header stats
     planTitle.textContent = plan.title.toUpperCase();
     planLogline.textContent = plan.logline || "";
     planModeBadge.textContent = (plan.mode || "AD").toUpperCase();
-    planModeBadge.className = `badge badge-mode`;
 
     statScenes.textContent = plan.scenes ? plan.scenes.length : 0;
     const totalShots = plan.scenes
@@ -243,28 +282,45 @@ document.addEventListener("DOMContentLoaded", () => {
 
         const isChained = shot.chain_from_previous;
         const chainHtml = isChained
-          ? `<span class="continuity-pill" title="Chained from previous frame">⛓ CHAINED</span>`
+          ? `<span class="continuity-pill" id="chain-pill-${shot.id}" title="Chained from previous frame">⛓ CHAINED</span>`
           : "";
 
         const voHtml = shot.vo_line
           ? `<div class="shot-vo-box">"${escapeHtml(shot.vo_line)}"</div>`
           : "";
 
+        const imgHtml = shot.image_url
+          ? `<img src="${shot.image_url}" class="shot-img-thumb" alt="${shot.id}">`
+          : "";
+
         shotCard.innerHTML = `
           <div class="shot-card-header">
-            <span class="shot-id">${shot.id.toUpperCase()}</span>
+            <div style="display:flex; align-items:center; gap:6px;">
+              <span class="shot-id">${shot.id.toUpperCase()}</span>
+              <span class="attempt-pill" id="att-badge-${shot.id}">ATTEMPT #1</span>
+            </div>
             <span class="shot-duration">${shot.duration_s}s</span>
           </div>
-          <div class="shot-thumbnail">
+          <div class="shot-thumbnail" id="thumb-${shot.id}">
+            ${imgHtml}
             ${chainHtml}
             <span class="camera-tag">${escapeHtml(shot.camera || "Wide Shot")}</span>
           </div>
           <div class="shot-details">
-            <p class="shot-desc">${escapeHtml(shot.description)}</p>
+            <p class="shot-desc" id="desc-${shot.id}">${escapeHtml(shot.description)}</p>
             ${voHtml}
             <div class="shot-status-row">
-              <span class="shot-status-badge status-${shot.status || 'planned'}">${(shot.status || 'PLANNED').toUpperCase()}</span>
+              <span class="shot-status-badge status-${shot.status || 'pending'}" id="status-badge-${shot.id}">${(shot.status || 'PENDING').toUpperCase()}</span>
+              <span class="critic-badge hidden" id="critic-badge-${shot.id}"></span>
             </div>
+          </div>
+          <div class="critic-drawer hidden" id="critic-drawer-${shot.id}">
+            <div class="critic-drawer-header">
+              <span>CRITIC REVIEW</span>
+              <span id="critic-score-${shot.id}">SCORE: 0.00</span>
+            </div>
+            <ul class="critic-reasons" id="critic-reasons-${shot.id}"></ul>
+            <div class="critic-fix-box hidden" id="critic-fix-${shot.id}"></div>
           </div>
         `;
 
@@ -275,11 +331,128 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 
-  // 7. Subscribe to SSE events
+  // 9. Update Specific Shot Card on Live SSE Events
+  function updateShotCard(shotId, data) {
+    if (!shotId) return;
+    const card = document.getElementById(`card-${shotId}`);
+    if (!card) return;
+
+    // Status badge
+    if (data.status) {
+      const badge = document.getElementById(`status-badge-${shotId}`);
+      if (badge) {
+        badge.textContent = data.status.toUpperCase();
+        badge.className = `shot-status-badge status-${data.status.toLowerCase()}`;
+      }
+    }
+
+    // Keyframe thumbnail
+    if (data.image_url) {
+      const thumbBox = document.getElementById(`thumb-${shotId}`);
+      if (thumbBox) {
+        let img = thumbBox.querySelector(".shot-img-thumb");
+        if (!img) {
+          img = document.createElement("img");
+          img.className = "shot-img-thumb";
+          thumbBox.insertBefore(img, thumbBox.firstChild);
+        }
+        img.src = data.image_url;
+      }
+    }
+
+    // Attempt counter
+    if (data.attempt) {
+      const attBadge = document.getElementById(`att-badge-${shotId}`);
+      if (attBadge) {
+        attBadge.textContent = `ATTEMPT #${data.attempt}`;
+        if (data.attempt > 1) {
+          attBadge.style.borderColor = "rgba(245, 158, 11, 0.5)";
+          attBadge.style.color = "#fbbf24";
+        }
+      }
+    }
+
+    // Chaining indicator
+    if (data.chained) {
+      const chainPill = document.getElementById(`chain-pill-${shotId}`);
+      if (!chainPill) {
+        const thumbBox = document.getElementById(`thumb-${shotId}`);
+        if (thumbBox) {
+          const pill = document.createElement("span");
+          pill.className = "continuity-pill";
+          pill.id = `chain-pill-${shotId}`;
+          pill.textContent = "⛓ CHAINED";
+          thumbBox.appendChild(pill);
+        }
+      }
+    }
+
+    // Critic results
+    if (data.critic) {
+      const critBadge = document.getElementById(`critic-badge-${shotId}`);
+      const drawer = document.getElementById(`critic-drawer-${shotId}`);
+      const scoreSpan = document.getElementById(`critic-score-${shotId}`);
+      const reasonsList = document.getElementById(`critic-reasons-${shotId}`);
+      const fixBox = document.getElementById(`critic-fix-${shotId}`);
+
+      if (critBadge && drawer) {
+        critBadge.classList.remove("hidden");
+        drawer.classList.remove("hidden");
+
+        const score = data.critic.score ? data.critic.score.toFixed(2) : "0.00";
+        scoreSpan.textContent = `SCORE: ${score}`;
+
+        if (data.critic.passed) {
+          critBadge.className = "critic-badge critic-passed";
+          critBadge.textContent = `✔ CRITIC ${score}`;
+        } else {
+          critBadge.className = "critic-badge critic-failed";
+          critBadge.textContent = `✘ CRITIC ${score}`;
+        }
+
+        reasonsList.innerHTML = "";
+        (data.critic.reasons || []).forEach((r) => {
+          const li = document.createElement("li");
+          li.textContent = r;
+          reasonsList.appendChild(li);
+        });
+
+        if (data.critic.suggested_prompt_fix) {
+          fixBox.classList.remove("hidden");
+          fixBox.textContent = `Fix: ${data.critic.suggested_prompt_fix}`;
+        } else {
+          fixBox.classList.add("hidden");
+        }
+      }
+    }
+  }
+
+  // 10. Complete Video Player Setup
+  function displayMasterVideo(videoUrl, posterUrl) {
+    if (!videoUrl) return;
+
+    playerPlaceholder.classList.add("hidden");
+    masterVideo.classList.remove("hidden");
+    masterVideo.src = videoUrl;
+    if (posterUrl) {
+      masterVideo.poster = posterUrl;
+    }
+
+    playerStatusBadge.textContent = "MASTER READY";
+    playerStatusBadge.style.backgroundColor = "rgba(16, 185, 129, 0.2)";
+    playerStatusBadge.style.color = "#34d399";
+    playerStatusBadge.style.borderColor = "rgba(16, 185, 129, 0.4)";
+
+    downloadVideoBtn.classList.remove("hidden");
+    downloadVideoBtn.href = videoUrl;
+  }
+
+  // 11. Subscribe to SSE events
   function connectJobEvents(jobId) {
     if (activeEventSource) {
       activeEventSource.close();
     }
+    currentJobId = jobId;
 
     jobBadge.classList.remove("hidden");
     jobIdText.textContent = jobId.toUpperCase();
@@ -292,10 +465,12 @@ document.addEventListener("DOMContentLoaded", () => {
         const event = JSON.parse(e.data);
         appendLog(event.step, event.message, event.timestamp);
 
+        // Progress bar updates
+        handleEventStep(event);
+
         // If plan is present in data payload, render it immediately
         if (event.data && event.data.plan) {
           renderPlan(event.data.plan);
-          resetSubmitBtn();
         }
       } catch (err) {
         console.error("SSE parse error", err);
@@ -303,9 +478,113 @@ document.addEventListener("DOMContentLoaded", () => {
     });
 
     activeEventSource.onerror = () => {
-      // Periodic check via REST if SSE drops
       pollJobStatus(jobId);
     };
+  }
+
+  function handleEventStep(event) {
+    const step = event.step;
+    const data = event.data || {};
+    const shotId = event.shot_id;
+
+    switch (step) {
+      case "PLAN":
+        updateProgress(15, "Planning story structure");
+        break;
+
+      case "REF":
+        updateProgress(25, "Generating reference sheets");
+        if (data.entity && data.url) {
+          addReferenceSheetThumb(data.entity, data.type || "ref", data.url);
+        }
+        break;
+
+      case "MUSIC":
+      case "VO":
+        updateProgress(35, "Synthesizing voiceover & score");
+        break;
+
+      case "KEYFRAME":
+        updateProgress(45, `Rendering keyframe ${shotId || ""}`);
+        if (shotId) {
+          updateShotCard(shotId, {
+            status: "generating",
+            attempt: data.attempt,
+          });
+        }
+        break;
+
+      case "GEN":
+        updateProgress(55, `Rendering clip ${shotId || ""}`);
+        if (shotId) {
+          updateShotCard(shotId, {
+            status: "generating",
+            attempt: data.attempt,
+          });
+        }
+        break;
+
+      case "CHAIN":
+        if (shotId) {
+          updateShotCard(shotId, { chained: true });
+        }
+        break;
+
+      case "CRITIC_PASS":
+        updateProgress(65, `Critic approved ${shotId || ""}`);
+        if (shotId) {
+          updateShotCard(shotId, {
+            status: "passed",
+            critic: {
+              passed: true,
+              score: data.score,
+              reasons: data.reasons,
+            },
+          });
+        }
+        break;
+
+      case "CRITIC_FAIL":
+        if (shotId) {
+          updateShotCard(shotId, {
+            status: data.fallback ? "passed" : "failed",
+            critic: {
+              passed: false,
+              score: data.score,
+              reasons: data.reasons,
+              suggested_prompt_fix: data.suggested_prompt_fix,
+            },
+          });
+        }
+        break;
+
+      case "RETRY":
+        if (shotId) {
+          updateShotCard(shotId, {
+            status: "retrying",
+            attempt: data.next_attempt,
+          });
+        }
+        break;
+
+      case "ASSEMBLE":
+        updateProgress(85, "FFmpeg master assembly");
+        playerStatusBadge.textContent = "ASSEMBLING";
+        break;
+
+      case "DONE":
+        updateProgress(100, "Production complete");
+        if (data.final_video_url) {
+          displayMasterVideo(data.final_video_url, data.poster_url);
+        }
+        resetSubmitBtn();
+        break;
+
+      case "ERROR":
+        updateProgress(100, "Error halted pipeline");
+        resetSubmitBtn();
+        break;
+    }
   }
 
   async function pollJobStatus(jobId) {
@@ -313,8 +592,12 @@ document.addEventListener("DOMContentLoaded", () => {
       const res = await fetch(`/api/jobs/${jobId}`);
       if (res.ok) {
         const job = await res.json();
-        if (job.plan) {
+        if (job.plan && !currentPlan) {
           renderPlan(job.plan);
+        }
+        if (job.final_video_url) {
+          displayMasterVideo(job.final_video_url, job.poster_url);
+          updateProgress(100, "Complete");
           resetSubmitBtn();
         }
       }
@@ -326,22 +609,23 @@ document.addEventListener("DOMContentLoaded", () => {
   function setSubmitting() {
     submitBtn.disabled = true;
     btnSpinner.classList.remove("hidden");
-    btnText.textContent = "Agent Synthesizing Plan...";
+    btnText.textContent = "Showrunner Agent Active...";
   }
 
   function resetSubmitBtn() {
     submitBtn.disabled = false;
     btnSpinner.classList.add("hidden");
-    btnText.textContent = "Generate Production Plan";
+    btnText.textContent = "Run Showrunner Studio";
   }
 
-  // 8. Form Submission
+  // 12. Form Submission
   briefForm.addEventListener("submit", async (e) => {
     e.preventDefault();
     const brief = briefInput.value.trim();
     if (!brief) return;
 
     setSubmitting();
+    updateProgress(5, "Initializing production agent");
 
     appendLog("PLAN", `Initiating Showrunner production agent... Mode: ${selectedModeInput.value}`);
 

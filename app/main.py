@@ -27,7 +27,8 @@ from app.models import (
     JobStatus,
     VideoMode,
 )
-from app.pipeline.planner import run_planner, save_job_state
+from app.pipeline.orchestrator import run_pipeline
+from app.pipeline.planner import save_job_state
 
 # In-memory fast cache of active jobs
 jobs_db: Dict[str, Job] = {}
@@ -161,8 +162,8 @@ async def create_job(request: Request) -> Dict[str, Any]:
         message=f"Job {job.id} registered. Mode: {job.mode.value}. Pacing planner queued.",
     )
 
-    # Launch agent planner background task
-    asyncio.create_task(run_planner(job))
+    # Launch full agent production pipeline background task
+    asyncio.create_task(run_pipeline(job))
 
     return {
         "id": job.id,

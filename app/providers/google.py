@@ -41,8 +41,21 @@ class GoogleImageProvider(BaseImageProvider):
         ref_image: Optional[str] = None,
         job_dir: Optional[str] = None,
         shot_id: Optional[str] = None,
+        scene_num: int = 1,
+        shot_num: int = 1,
+        attempt: int = 1,
     ) -> str:
         raise NotImplementedError("Google Imagen / Gemini Image provider not yet implemented.")
+
+    async def generate_ref_sheet(
+        self,
+        entity_type: str,
+        name: str,
+        description: str,
+        style: BibleStyle,
+        job_dir: str,
+    ) -> str:
+        raise NotImplementedError("Google Imagen reference sheet generator not yet implemented.")
 
 
 class GoogleVideoProvider(BaseVideoProvider):

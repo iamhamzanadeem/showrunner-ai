@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 
 
@@ -46,6 +46,7 @@ class CharacterSpec(BaseModel):
     name: str
     appearance: str
     role: Optional[str] = None
+    reference_image: Optional[str] = None
 
 
 class ProductSpec(BaseModel):
@@ -68,6 +69,17 @@ class CritiqueResult(BaseModel):
     suggested_prompt_fix: Optional[str] = None
 
 
+class ShotAttempt(BaseModel):
+    attempt_number: int
+    prompt: str
+    image_url: Optional[str] = None
+    clip_url: Optional[str] = None
+    critique: Optional[CritiqueResult] = None
+    created_at: str = Field(
+        default_factory=lambda: datetime.now(timezone.utc).isoformat()
+    )
+
+
 class Shot(BaseModel):
     id: str
     scene_id: str
@@ -82,8 +94,15 @@ class Shot(BaseModel):
     status: ShotStatus = ShotStatus.pending
     image_url: Optional[str] = None
     video_url: Optional[str] = None
+    audio_url: Optional[str] = None
+    first_frame_url: Optional[str] = None
+    chained_from_shot_id: Optional[str] = None
     retry_count: int = 0
     last_critique: Optional[CritiqueResult] = None
+    best_critique: Optional[CritiqueResult] = None
+    is_flagged_fallback: bool = False
+    attempts: List[ShotAttempt] = Field(default_factory=list)
+    prompt_history: List[str] = Field(default_factory=list)
 
 
 class Scene(BaseModel):
@@ -116,7 +135,7 @@ class AgentEvent(BaseModel):
     job_id: str
     step: str = Field(
         ...,
-        description="One of: PLAN, GEN, CRITIC_PASS, CRITIC_FAIL, RETRY, ASSEMBLE, INFO, ERROR",
+        description="One of: PLAN, REF, KEYFRAME, GEN, CHAIN, CRITIC_PASS, CRITIC_FAIL, RETRY, VO, MUSIC, ASSEMBLE, DONE, ERROR",
     )
     message: str
     timestamp: str = Field(
@@ -139,7 +158,12 @@ class Job(BaseModel):
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
     reference_images: List[str] = Field(default_factory=list)
+    character_refs: Dict[str, str] = Field(default_factory=dict)
+    product_refs: Dict[str, str] = Field(default_factory=dict)
     plan: Optional[Plan] = None
+    soundtrack_url: Optional[str] = None
+    poster_url: Optional[str] = None
+    captions_srt_url: Optional[str] = None
     final_video_url: Optional[str] = None
     error: Optional[str] = None
 

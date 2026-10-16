@@ -29,7 +29,7 @@
         <div class="brand-text">
           <div class="title-row">
             <h1>SHOWRUNNER<span class="highlight">.AI</span></h1>
-            <span class="version-tag">M1</span>
+            <span class="version-tag">M2</span>
           </div>
           <span class="subtitle">Autonomous AI Video Studio</span>
         </div>
@@ -92,7 +92,7 @@
             <textarea
               id="brief-input"
               name="brief"
-              rows="5"
+              rows="4"
               placeholder="Describe your film or commercial. E.g.: 'A neon-lit cyberpunk commercial for an ultra-fast quantum energy drink called Kinetic Zero, starring a lone runner traversing rain-slicked skyscrapers.'"
               required
             ></textarea>
@@ -130,7 +130,7 @@
               <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <polygon points="5 3 19 12 5 21 5 3"></polygon>
               </svg>
-              <span id="btn-text">Generate Production Plan</span>
+              <span id="btn-text">Run Showrunner Studio</span>
             </button>
           </div>
         </form>
@@ -154,6 +154,10 @@
             <div class="bible-section">
               <span class="bible-key">CHARACTERS & PRODUCTS</span>
               <div id="bible-entities" class="bible-entities"></div>
+            </div>
+            <div class="bible-section" id="ref-sheet-section">
+              <span class="bible-key">GENERATED REFERENCE SHEETS</span>
+              <div id="ref-sheet-thumbnails" class="ref-sheet-thumbnails"></div>
             </div>
           </div>
         </div>
@@ -186,6 +190,17 @@
           </div>
         </div>
 
+        <!-- Pipeline Progress Bar -->
+        <div class="pipeline-progress-wrapper" id="pipeline-progress-wrapper">
+          <div class="pipeline-progress-bar">
+            <div class="pipeline-progress-fill" id="progress-fill" style="width: 0%;"></div>
+          </div>
+          <div class="progress-labels">
+            <span id="progress-step-text" class="progress-step">READY</span>
+            <span id="progress-pct-text" class="progress-pct">0%</span>
+          </div>
+        </div>
+
         <!-- Scene Board Scroll Area -->
         <div class="scene-board" id="scene-board">
           <div class="board-empty-state" id="board-empty">
@@ -211,16 +226,22 @@
               </svg>
               <span>MASTER VIDEO ASSEMBLY</span>
             </div>
-            <span class="badge badge-player-status" id="player-status-badge">STANDBY</span>
+            <div class="player-actions">
+              <a id="download-video-btn" class="btn-download hidden" href="#" download="showrunner_master.mp4">
+                ⬇ Download MP4
+              </a>
+              <span class="badge badge-player-status" id="player-status-badge">STANDBY</span>
+            </div>
           </div>
           <div class="player-viewport">
-            <div class="player-placeholder">
+            <div id="player-placeholder" class="player-placeholder">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" class="placeholder-film-icon">
                 <circle cx="12" cy="12" r="10"></circle>
                 <polygon points="10 8 16 12 10 16 10 8"></polygon>
               </svg>
-              <p>FFmpeg video assembly pipeline will render here upon completion of shot synthesis and critique loops.</p>
+              <p id="player-status-desc">FFmpeg video assembly pipeline will render here upon completion of shot synthesis and critique loops.</p>
             </div>
+            <video id="master-video" class="master-video-elem hidden" controls playsinline></video>
           </div>
         </div>
       </section>

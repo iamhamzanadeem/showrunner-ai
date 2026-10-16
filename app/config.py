@@ -21,6 +21,10 @@ class Settings(BaseSettings):
     HOST: str = "0.0.0.0"
     PORT: int = 8080
 
+    MAX_RETRIES: int = 2
+    MAX_PARALLEL_SCENES: int = 2
+    MOCK_DELAY_S: float = 0.3
+
     @property
     def resolved_provider(self) -> Literal["mock", "google"]:
         """Resolves active provider based on environment and credentials."""

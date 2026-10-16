@@ -103,10 +103,8 @@ class EventBus:
 
     @staticmethod
     def _is_terminal(event: AgentEvent) -> bool:
-        """Determines if an event signals end of the pipeline stage."""
-        if event.step in ("ERROR", "COMPLETED"):
-            return True
-        if event.step == "PLAN" and "Planning stage complete" in event.message:
+        """Determines if an event signals end of the full production pipeline."""
+        if event.step in ("DONE", "ERROR", "COMPLETED"):
             return True
         return False
 

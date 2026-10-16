@@ -1,7 +1,13 @@
 from __future__ import annotations
 
+import asyncio
+from pathlib import Path
 import re
+import subprocess
 from typing import List, Optional
+from PIL import Image, ImageDraw, ImageFont
+
+from app.config import settings
 from app.models import (
     Bible,
     BibleStyle,
@@ -55,6 +61,16 @@ def _extract_keywords(brief: str) -> List[str]:
     return keywords if keywords else ["Nova", "Horizon", "Kinetic"]
 
 
+def _hex_to_rgb(hex_code: str, fallback=(18, 22, 34)) -> tuple[int, int, int]:
+    try:
+        hex_code = hex_code.lstrip("#")
+        if len(hex_code) == 6:
+            return int(hex_code[0:2], 16), int(hex_code[2:4], 16), int(hex_code[4:6], 16)
+    except Exception:
+        pass
+    return fallback
+
+
 class MockPlannerProvider(BasePlannerProvider):
     """Deterministic, brief-aware mock planner generating realistic production blueprints."""
 
@@ -82,7 +98,7 @@ class MockPlannerProvider(BasePlannerProvider):
             char_role = "Pioneering Operative"
             char_appearance = "Sleek tactical attire with subtle bioluminescent accents and focused gaze"
             product_name = f"{primary_subject} Core"
-            product_desc = f"Next-generation precision device glowing with cyan edge-illumination"
+            product_desc = "Next-generation precision device glowing with cyan edge-illumination"
         elif any(w in lower_brief for w in ["nature", "eco", "green", "earth", "sun", "organic"]):
             palette = ["#1B3B2B", "#F5EBE1", "#E6A15C", "#2D5A43"]
             lighting = "Warm golden hour directional backlight with natural lens dust motes"
@@ -140,10 +156,10 @@ class MockPlannerProvider(BasePlannerProvider):
                             id="shot_1_1",
                             scene_id="scene_1",
                             duration_s=6.0,
-                            description=f"Wide dynamic establish: city bustle or sterile environment where {char_name} pauses.",
+                            description=f"Wide dynamic establish: city bustle where {char_name} pauses.",
                             camera="Wide tracking shot moving backwards, low angle, slow tilt up",
-                            visual_prompt=f"Cinematic wide shot, {mood.lower()}, {lighting}, {char_name} walking against the crowd in monochrome urban architecture, 8k resolution, cinematic color grade.",
-                            vo_line=f"In a world accelerating past human limits, compromise was once the only option.",
+                            visual_prompt=f"Cinematic wide shot, {mood.lower()}, {lighting}, {char_name} walking against the crowd, 8k resolution, cinematic color grade.",
+                            vo_line="In a world accelerating past human limits, compromise was once the only option.",
                             characters_referenced=[char_name],
                             products_referenced=[],
                             chain_from_previous=False,
@@ -155,8 +171,8 @@ class MockPlannerProvider(BasePlannerProvider):
                             duration_s=7.0,
                             description=f"Intense close-up on {char_name}'s eyes as reflection shimmers.",
                             camera="Extreme close-up pushing slowly into the iris, rack focus",
-                            visual_prompt=f"Macro extreme close-up of {char_name}'s eye reflecting luminous glow of {palette[1]}, intense focus, subtle breath vapor, cinematic realism, {lens}.",
-                            vo_line=f"Until every standard had to be reimagined from the foundation up.",
+                            visual_prompt=f"Macro extreme close-up of {char_name}'s eye reflecting luminous glow of {palette[1]}, intense focus, {lens}.",
+                            vo_line="Until every standard had to be reimagined from the foundation up.",
                             characters_referenced=[char_name],
                             products_referenced=[],
                             chain_from_previous=True,
@@ -175,8 +191,8 @@ class MockPlannerProvider(BasePlannerProvider):
                             scene_id="scene_2",
                             duration_s=7.0,
                             description=f"Product reveal: {product_name} floating effortlessly in dynamic studio space.",
-                            camera="360-degree rotational arc orbiting the product, speed ramp from fast to slow",
-                            visual_prompt=f"Hero commercial packshot of {product_name}, {product_desc}, levitating amidst floating dust particles illuminated by {palette[1]} and {palette[2]}, ultra-clean hyper-realistic rendering.",
+                            camera="360-degree rotational arc orbiting the product",
+                            visual_prompt=f"Hero commercial packshot of {product_name}, {product_desc}, levitating amidst dust particles illuminated by {palette[1]}, ultra-clean.",
                             vo_line=f"Meet {product_name}. Engineered not just to keep pace, but to set the rhythm.",
                             characters_referenced=[],
                             products_referenced=[product_name],
@@ -188,9 +204,9 @@ class MockPlannerProvider(BasePlannerProvider):
                             scene_id="scene_2",
                             duration_s=6.0,
                             description=f"{char_name} interacting with {product_name} as energy bursts forward.",
-                            camera="Medium close-up profile shot, handheld kinetic motion with stabilization",
-                            visual_prompt=f"Dynamic medium shot of {char_name} engaging with {product_name}, surge of {palette[1]} light across the frame, triumphant energy, cinematic film texture.",
-                            vo_line=f"Instant response. Unmatched craftsmanship. Zero friction.",
+                            camera="Medium close-up profile shot, handheld kinetic motion",
+                            visual_prompt=f"Dynamic medium shot of {char_name} engaging with {product_name}, surge of {palette[1]} light across the frame, triumphant energy.",
+                            vo_line="Instant response. Unmatched craftsmanship. Zero friction.",
                             characters_referenced=[char_name],
                             products_referenced=[product_name],
                             chain_from_previous=True,
@@ -210,7 +226,7 @@ class MockPlannerProvider(BasePlannerProvider):
                             duration_s=6.0,
                             description=f"Hero freeze-frame transition into {product_name} emblem and brand lockup.",
                             camera="Slow zoom out from product emblem to wide majestic horizon",
-                            visual_prompt=f"Aesthetic brand lockup shot, {product_name} resting proudly at center frame, backdrop of endless horizon bathed in {palette[0]} and {palette[1]} gradients, pristine typography space.",
+                            visual_prompt=f"Aesthetic brand lockup shot, {product_name} resting proudly at center frame, backdrop of endless horizon bathed in {palette[0]} gradients.",
                             vo_line=f"{primary_subject}. Define your future today.",
                             characters_referenced=[char_name],
                             products_referenced=[product_name],
@@ -223,7 +239,7 @@ class MockPlannerProvider(BasePlannerProvider):
             target_duration = 32.0
 
         else:
-            # Short film mode: 18 shots across 5 scenes totalling 148 seconds (~150s, 4-8s each)
+            # Short film mode: 18 shots across 5 scenes totalling 137 seconds (~150s, 4-8s each)
             scenes = [
                 Scene(
                     id="scene_1",
@@ -237,7 +253,7 @@ class MockPlannerProvider(BasePlannerProvider):
                             duration_s=7.0,
                             description=f"Sweeping aerial landscape establishing the vast expanse of {primary_subject}.",
                             camera="Extreme wide drone descent, sweeping forward over atmospheric terrain",
-                            visual_prompt=f"Cinematic wide establishing shot of vast desolate landscape, {lighting}, {mood}, atmospheric fog rolling across mountain ridgelines, 35mm anamorphic film grain.",
+                            visual_prompt=f"Cinematic wide establishing shot of vast desolate landscape, {lighting}, {mood}, atmospheric fog, 35mm anamorphic film grain.",
                             vo_line="They told us nothing survived past the perimeter wall.",
                             characters_referenced=[],
                             products_referenced=[],
@@ -247,9 +263,9 @@ class MockPlannerProvider(BasePlannerProvider):
                             id="shot_1_2",
                             scene_id="scene_1",
                             duration_s=8.0,
-                            description=f"{char_name} stands alone on an outpost ledge inspecting a telemetry unit.",
+                            description=f"{char_name} stands alone on an outpost ledge inspecting telemetry.",
                             camera="Medium wide slowly tracking left to right behind metal girders",
-                            visual_prompt=f"Medium wide shot of {char_name}, {char_appearance}, standing at rusty vantage point observing the horizon, wind flapping clothing, {lens}.",
+                            visual_prompt=f"Medium wide shot of {char_name}, {char_appearance}, standing at rusty vantage point observing the horizon, {lens}.",
                             vo_line="Seven months of static. Until this morning's harmonic spike.",
                             characters_referenced=[char_name],
                             products_referenced=[],
@@ -259,7 +275,7 @@ class MockPlannerProvider(BasePlannerProvider):
                             id="shot_1_3",
                             scene_id="scene_1",
                             duration_s=7.0,
-                            description="Close-up on instrument dial flickering erratically with blue phosphor numbers.",
+                            description="Close-up on instrument dial flickering erratically with phosphor numbers.",
                             camera="Macro shot tilting from needle gauge to flickering digital readout",
                             visual_prompt=f"Extreme close-up of analog dial vibrating, neon phosphor illumination in {palette[1]}, scratched glass face, cinematic texture.",
                             vo_line="It wasn't an echo. It was a coordinates pulse.",
@@ -279,9 +295,9 @@ class MockPlannerProvider(BasePlannerProvider):
                             id="shot_2_1",
                             scene_id="scene_2",
                             duration_s=8.0,
-                            description=f"Interior shelter: {char_name} retrieves {product_name} from a sealed reinforced case.",
+                            description=f"Interior shelter: {char_name} retrieves {product_name} from a sealed case.",
                             camera="Low angle medium shot panning across worktable as locks hiss open",
-                            visual_prompt=f"Low angle cinematic shot inside moody workshop, {lighting}, steam venting from pressurized container revealing {product_name}, gleaming metal finishes.",
+                            visual_prompt=f"Low angle cinematic shot inside moody workshop, {lighting}, steam venting from container revealing {product_name}.",
                             vo_line="Protocol said report it and retreat. Protocol didn't know what was buried out there.",
                             characters_referenced=[char_name],
                             products_referenced=[product_name],
@@ -293,7 +309,7 @@ class MockPlannerProvider(BasePlannerProvider):
                             duration_s=7.0,
                             description=f"{char_name} buckles gear and secures {product_name} to chest harness.",
                             camera="Close-up dynamic montage pan following gloved hands securing tactical buckles",
-                            visual_prompt=f"Close-up tactile gear preparation, intricate straps, mechanical clicks, {char_name}'s determined expression captured in side mirror reflection.",
+                            visual_prompt=f"Close-up tactile gear preparation, intricate straps, {char_name}'s determined expression captured in reflection.",
                             vo_line=None,
                             characters_referenced=[char_name],
                             products_referenced=[product_name],
@@ -303,9 +319,9 @@ class MockPlannerProvider(BasePlannerProvider):
                             id="shot_2_3",
                             scene_id="scene_2",
                             duration_s=8.0,
-                            description="The heavy perimeter blast gate grinds open, revealing misty twilight beyond.",
+                            description="The heavy perimeter blast gate grinds open, revealing twilight beyond.",
                             camera="Ground level track following boots crossing the threshold line",
-                            visual_prompt=f"Heavy industrial steel gate opening vertically with sparks, massive silhouette of {char_name} stepping into dense billowing fog, backlit by sodium floodlights.",
+                            visual_prompt=f"Heavy industrial steel gate opening vertically with sparks, massive silhouette of {char_name} stepping into dense fog.",
                             vo_line="The moment your boots hit the unmapped dust, there is no turning back.",
                             characters_referenced=[char_name],
                             products_referenced=[],
@@ -325,7 +341,7 @@ class MockPlannerProvider(BasePlannerProvider):
                             duration_s=8.0,
                             description=f"{char_name} navigates a labyrinth of overgrown megalithic structures.",
                             camera="Wide tracking shot sliding sideways parallel to towering monoliths",
-                            visual_prompt=f"Epic wide shot of monolithic ancient architecture swallowed by glowing moss, {palette[0]} and {palette[1]} light shafts slicing through fog, {char_name} tiny in scale.",
+                            visual_prompt=f"Epic wide shot of monolithic ancient architecture, {palette[0]} and {palette[1]} light shafts slicing through fog.",
                             vo_line="Every kilometer further, the air grew colder and the silence heavier.",
                             characters_referenced=[char_name],
                             products_referenced=[],
@@ -336,8 +352,8 @@ class MockPlannerProvider(BasePlannerProvider):
                             scene_id="scene_3",
                             duration_s=7.0,
                             description="A sudden seismic tremor rattles loose gravel down a steep canyon wall.",
-                            camera="Handheld dutch angle tilting rapidly upward as rocks tumble past lens",
-                            visual_prompt=f"Dynamic handheld action shot, crumbling shale slope, dust explosion caught in beam of tactical light, dynamic motion blur, intense cinematic urgency.",
+                            camera="Handheld dutch angle tilting rapidly upward as rocks tumble",
+                            visual_prompt="Dynamic handheld action shot, crumbling shale slope, dust explosion caught in beam of tactical light, intense urgency.",
                             vo_line="The sector wasn't deserted. It was waking up.",
                             characters_referenced=[],
                             products_referenced=[],
@@ -349,7 +365,7 @@ class MockPlannerProvider(BasePlannerProvider):
                             duration_s=8.0,
                             description=f"{char_name} activates the sensor array on {product_name} to stabilize coordinates.",
                             camera="Over the shoulder shot pushing past {char_name} onto holographic readout",
-                            visual_prompt=f"Over the shoulder shot of {char_name} activating {product_name}, crisp volumetric interface projecting geometric ring coordinates in mid-air, face illuminated by neon glow.",
+                            visual_prompt=f"Over the shoulder shot of {char_name} activating {product_name}, crisp volumetric interface projecting coordinates.",
                             vo_line=f"{product_name} locked the beacon. Less than two hundred meters ahead.",
                             characters_referenced=[char_name],
                             products_referenced=[product_name],
@@ -359,9 +375,9 @@ class MockPlannerProvider(BasePlannerProvider):
                             id="shot_3_4",
                             scene_id="scene_3",
                             duration_s=8.0,
-                            description=f"Rapid sprint across a crumbling skybridge suspended over abyss.",
+                            description="Rapid sprint across a crumbling skybridge suspended over abyss.",
                             camera="Forward tracking dolly matching {char_name}'s sprint with whip pans",
-                            visual_prompt=f"Kinetic chase perspective, {char_name} sprinting across suspension structure, lightning flashing in background clouds, wind howling through steel cables.",
+                            visual_prompt=f"Kinetic chase perspective, {char_name} sprinting across suspension structure, lightning flashing in background clouds.",
                             vo_line=None,
                             characters_referenced=[char_name],
                             products_referenced=[],
@@ -379,9 +395,9 @@ class MockPlannerProvider(BasePlannerProvider):
                             id="shot_4_1",
                             scene_id="scene_4",
                             duration_s=7.0,
-                            description="Reaching a grand subterranean vault chamber where an orb pulses with power.",
+                            description="Reaching a grand subterranean vault chamber where an orb pulses.",
                             camera="Slow majestic crane up revealing the enormous spherical relic",
-                            visual_prompt=f"Awe-inspiring wide interior cavern, massive floating crystalline sphere emitting pulsating waves of {palette[1]} and {palette[2]} light, reflections on wet obsidian floor.",
+                            visual_prompt=f"Awe-inspiring wide interior cavern, massive floating crystalline sphere emitting pulsating waves of {palette[1]} light.",
                             vo_line="It wasn't an abandoned transmission. It was an invitation.",
                             characters_referenced=[],
                             products_referenced=[],
@@ -393,7 +409,7 @@ class MockPlannerProvider(BasePlannerProvider):
                             duration_s=8.0,
                             description=f"{char_name} steps onto the central platform, lowering protective visor.",
                             camera="Medium close-up moving steadily forward with protagonist",
-                            visual_prompt=f"Medium shot of {char_name} removing face shield, expression of profound revelation and wonder, eyes gleaming with reflected prism lights, {lighting}.",
+                            visual_prompt=f"Medium shot of {char_name} removing face shield, expression of profound revelation and wonder, eyes gleaming with prism light.",
                             vo_line="The builders never left. They were waiting for someone who could decipher the key.",
                             characters_referenced=[char_name],
                             products_referenced=[],
@@ -405,7 +421,7 @@ class MockPlannerProvider(BasePlannerProvider):
                             duration_s=8.0,
                             description=f"{char_name} presents {product_name} into the core receiver slot.",
                             camera="Close-up orbiting the alignment of device and ancient mechanism",
-                            visual_prompt=f"Intricate macro shot: {product_name} aligning into ancient concentric ring mechanism, magnetic lock engages with radiant shockwave of golden particles.",
+                            visual_prompt=f"Intricate macro shot: {product_name} aligning into concentric ring mechanism, magnetic lock engages with shockwave.",
                             vo_line=None,
                             characters_referenced=[char_name],
                             products_referenced=[product_name],
@@ -417,7 +433,7 @@ class MockPlannerProvider(BasePlannerProvider):
                             duration_s=8.0,
                             description="The entire cavern illuminates in blinding harmonic luminescence.",
                             camera="Rapid pull-back expanding to cosmic scale as ceiling opens",
-                            visual_prompt=f"Colossal scale wide shot, roof of vault dissolving into celestial starry sky, pillars of light erupting towards the cosmos, epic grandeur.",
+                            visual_prompt="Colossal scale wide shot, roof of vault dissolving into starry sky, pillars of light erupting towards the cosmos.",
                             vo_line="The circuit closed. The map of the outer sectors unfolded all at once.",
                             characters_referenced=[],
                             products_referenced=[],
@@ -437,7 +453,7 @@ class MockPlannerProvider(BasePlannerProvider):
                             duration_s=7.0,
                             description="Dawn breaks across the valley as the strange light settles into steady stars.",
                             camera="Slow tilt down from vibrant sunrise clouds to the valley floor",
-                            visual_prompt=f"Breathtaking dawn landscape, gentle purple and amber morning hues, mist dissipating to reveal revitalized green valleys, peace restored.",
+                            visual_prompt="Breathtaking dawn landscape, gentle purple and amber morning hues, mist dissipating to reveal green valleys.",
                             vo_line="We thought the frontier was an empty wasteland.",
                             characters_referenced=[],
                             products_referenced=[],
@@ -449,7 +465,7 @@ class MockPlannerProvider(BasePlannerProvider):
                             duration_s=7.0,
                             description=f"{char_name} stands looking out at the transformed world with new resolve.",
                             camera="Medium shot profile, golden rim light accentuating shoulders and gaze",
-                            visual_prompt=f"Heroic medium profile of {char_name}, calm and determined smile, wind in hair, golden hour glow illuminating face and gear, 50mm f/1.2.",
+                            visual_prompt=f"Heroic medium profile of {char_name}, calm and determined smile, golden hour glow illuminating face and gear.",
                             vo_line="Now we know it was only the prologue.",
                             characters_referenced=[char_name],
                             products_referenced=[],
@@ -459,9 +475,9 @@ class MockPlannerProvider(BasePlannerProvider):
                             id="shot_5_3",
                             scene_id="scene_5",
                             duration_s=8.0,
-                            description=f"Close-up of {product_name} glowing steadily with newly acquired stellar coordinates.",
+                            description=f"Close-up of {product_name} glowing steadily with newly acquired coordinates.",
                             camera="Macro shot resting on the device surface as new constellations shift",
-                            visual_prompt=f"Close-up macro of {product_name}, active interface displaying rotating stellar map, immaculate craftsmanship, subtle mechanical hum.",
+                            visual_prompt=f"Close-up macro of {product_name}, active interface displaying rotating stellar map, immaculate craftsmanship.",
                             vo_line=None,
                             characters_referenced=[],
                             products_referenced=[product_name],
@@ -473,7 +489,7 @@ class MockPlannerProvider(BasePlannerProvider):
                             duration_s=7.0,
                             description=f"Wide trailing shot as {char_name} walks into the boundless dawn.",
                             camera="Slow high crane shot pulling up and away into the sunrise sky",
-                            visual_prompt=f"High angle cinematic crane shot receding upwards, lone figure of {char_name} striding confidently along sunlit ridge towards infinite horizons, fading slowly to black.",
+                            visual_prompt=f"High angle cinematic crane shot receding upwards, lone figure of {char_name} striding confidently towards infinite horizons.",
                             vo_line=f"{brief_title}.",
                             characters_referenced=[char_name],
                             products_referenced=[],
@@ -495,73 +511,301 @@ class MockPlannerProvider(BasePlannerProvider):
 
 
 class MockImageProvider(BaseImageProvider):
-    """Generates mock keyframe SVG/data urls for visual validation."""
+    """Generates mock reference sheets and keyframe PNGs using Pillow."""
+
+    async def generate_ref_sheet(
+        self,
+        entity_type: str,
+        name: str,
+        description: str,
+        style: BibleStyle,
+        job_dir: Path,
+    ) -> str:
+        if settings.MOCK_DELAY_S > 0:
+            await asyncio.sleep(min(0.1, settings.MOCK_DELAY_S))
+
+        filename = f"ref_{entity_type}_{re.sub(r'[^a-zA-Z0-9_]', '_', name.lower())}.png"
+        out_path = job_dir / filename
+
+        bg_rgb = _hex_to_rgb(style.palette[0] if style.palette else "#0a0f1d")
+        accent_rgb = _hex_to_rgb(style.palette[1] if len(style.palette) > 1 else "#00f0ff")
+
+        img = Image.new("RGB", (1280, 720), color=bg_rgb)
+        draw = ImageDraw.Draw(img)
+
+        # Border and header
+        draw.rectangle([20, 20, 1260, 700], outline=accent_rgb, width=3)
+        draw.rectangle([20, 20, 1260, 90], fill=(20, 25, 40))
+        draw.text((40, 35), "SHOWRUNNER AI // PRODUCTION BIBLE REFERENCE SHEET", fill=(148, 163, 184))
+        draw.text((40, 58), f"TYPE: {entity_type.upper()} REFERENCE", fill=accent_rgb)
+
+        # Main Name and details
+        draw.text((50, 130), name.upper(), fill=(255, 255, 255))
+        draw.rectangle([50, 160, 800, 162], fill=accent_rgb)
+
+        # Description text
+        lines = [description[i:i + 70] for i in range(0, len(description), 70)]
+        y = 190
+        for line in lines:
+            draw.text((50, y), line, fill=(226, 232, 240))
+            y += 28
+
+        # Style swatches at bottom
+        draw.text((50, 590), "STYLE PALETTE ALIGNMENT:", fill=(148, 163, 184))
+        x = 50
+        for color_hex in style.palette:
+            col = _hex_to_rgb(color_hex)
+            draw.rectangle([x, 620, x + 60, 660], fill=col, outline=(255, 255, 255), width=1)
+            draw.text((x, 668), color_hex, fill=(148, 163, 184))
+            x += 80
+
+        img.save(out_path, "PNG")
+        return str(out_path)
 
     async def generate_keyframe(
         self,
         prompt: str,
         style: BibleStyle,
         ref_image: Optional[str] = None,
-        job_dir: Optional[str] = None,
+        job_dir: Optional[Path] = None,
         shot_id: Optional[str] = None,
+        scene_num: int = 1,
+        shot_num: int = 1,
+        attempt: int = 1,
     ) -> str:
-        color = style.palette[0] if style.palette else "#1e293b"
-        return f"/media/{shot_id or 'keyframe'}.png"
+        if settings.MOCK_DELAY_S > 0:
+            await asyncio.sleep(min(0.1, settings.MOCK_DELAY_S))
+
+        filename = f"{shot_id or 'shot'}_att{attempt}_keyframe.png"
+        out_path = (job_dir or Path("./data")) / filename
+
+        bg_rgb = _hex_to_rgb(style.palette[0] if style.palette else "#0a0f1d")
+        accent_rgb = _hex_to_rgb(style.palette[1] if len(style.palette) > 1 else "#00f0ff")
+
+        img = Image.new("RGB", (1280, 720), color=bg_rgb)
+        draw = ImageDraw.Draw(img)
+
+        # Outer framing
+        draw.rectangle([15, 15, 1265, 705], outline=(60, 70, 90), width=2)
+
+        # Header tag
+        tag_bg = (245, 158, 11) if attempt > 1 else (6, 182, 212)
+        draw.rectangle([30, 30, 340, 70], fill=tag_bg)
+        draw.text((45, 42), f"SCENE {scene_num} · SHOT {shot_num} · ATTEMPT #{attempt}", fill=(0, 0, 0))
+
+        draw.text((30, 95), f"SHOT ID: {shot_id or 'N/A'}", fill=(148, 163, 184))
+
+        # Prompt box
+        draw.rectangle([30, 130, 1250, 240], fill=(16, 20, 32), outline=(40, 50, 75))
+        draw.text((45, 145), "VISUAL PROMPT BLUEPRINT:", fill=accent_rgb)
+        prompt_lines = [prompt[i:i + 85] for i in range(0, min(240, len(prompt)), 85)]
+        py = 175
+        for pline in prompt_lines:
+            draw.text((45, py), pline, fill=(226, 232, 240))
+            py += 24
+
+        # Center watermark box
+        draw.rectangle([440, 320, 840, 480], fill=(20, 25, 40), outline=accent_rgb, width=2)
+        draw.text((490, 380), "SHOWRUNNER KEYFRAME", fill=(255, 255, 255))
+        draw.text((530, 415), f"1280x720 • 24 FPS", fill=(148, 163, 184))
+
+        # Lighting & lens footer
+        draw.text((30, 640), f"LIGHTING: {style.lighting[:60]}", fill=(148, 163, 184))
+        draw.text((30, 665), f"LENS: {style.lens[:60]}", fill=(148, 163, 184))
+
+        img.save(out_path, "PNG")
+        return str(out_path)
 
 
 class MockVideoProvider(BaseVideoProvider):
-    """Generates mock video references."""
+    """Generates mock video clips via FFmpeg lavfi sources with continuity chaining."""
 
     async def generate_clip(
         self,
         prompt: str,
-        initial_frame: Optional[str] = None,
         duration_s: float = 8.0,
-        job_dir: Optional[str] = None,
+        initial_frame: Optional[str] = None,
+        job_dir: Optional[Path] = None,
         shot_id: Optional[str] = None,
+        scene_num: int = 1,
+        shot_num: int = 1,
+        attempt: int = 1,
     ) -> str:
-        return f"/media/{shot_id or 'clip'}.mp4"
+        if settings.MOCK_DELAY_S > 0:
+            await asyncio.sleep(min(0.15, settings.MOCK_DELAY_S))
+
+        filename = f"{shot_id or 'shot'}_att{attempt}.mp4"
+        out_path = (job_dir or Path("./data")) / filename
+
+        dur_str = f"{duration_s:.2f}"
+        safe_header = f"Scene {scene_num} - Shot {shot_num} - Attempt {attempt}"
+        safe_prompt = re.sub(r"[^a-zA-Z0-9 _\-]", "", prompt[:40])
+
+        if initial_frame and Path(initial_frame).exists():
+            # Continuity chaining: animate from initial frame
+            cmd = [
+                "ffmpeg", "-y",
+                "-loop", "1",
+                "-i", str(initial_frame),
+                "-t", dur_str,
+                "-vf", (
+                    f"scale=1280:720,drawtext=text='{safe_header} [CHAINED]':x=40:y=40:fontsize=28:fontcolor=white:box=1:boxcolor=black@0.6:boxborderw=6,"
+                    f"drawtext=text='{safe_prompt}':x=40:y=80:fontsize=20:fontcolor=yellow:box=1:boxcolor=black@0.6:boxborderw=4"
+                ),
+                "-c:v", "libx264",
+                "-pix_fmt", "yuv420p",
+                "-r", "24",
+                str(out_path),
+            ]
+        else:
+            # Standalone visual shot
+            bg_colors = ["0x0a0f1d", "0x1b3b2b", "0x09090b", "0x1e1b4b"]
+            bg = bg_colors[(scene_num + shot_num) % len(bg_colors)]
+            cmd = [
+                "ffmpeg", "-y",
+                "-f", "lavfi",
+                "-i", f"color=c={bg}:s=1280x720:d={dur_str}:r=24",
+                "-vf", (
+                    f"drawtext=text='{safe_header}':x=40:y=40:fontsize=28:fontcolor=white:box=1:boxcolor=black@0.6:boxborderw=6,"
+                    f"drawtext=text='{safe_prompt}':x=40:y=80:fontsize=20:fontcolor=yellow:box=1:boxcolor=black@0.6:boxborderw=4"
+                ),
+                "-c:v", "libx264",
+                "-pix_fmt", "yuv420p",
+                "-r", "24",
+                str(out_path),
+            ]
+
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        await proc.wait()
+        return str(out_path)
 
 
 class MockCriticProvider(BaseCriticProvider):
-    """Reviews clips against bible and shot specifications with mock critiques."""
+    """Reviews clips against bible and shot specifications with deterministic quality reviews."""
 
     async def critique_clip(
         self,
         video_path: str,
         shot: Shot,
         bible: Bible,
+        attempt: int = 1,
     ) -> CritiqueResult:
-        # Mock passes shots on retry or first attempt with high probability
+        if settings.MOCK_DELAY_S > 0:
+            await asyncio.sleep(min(0.2, settings.MOCK_DELAY_S))
+
+        # Deterministic failure rule:
+        # Fail attempt 1 for shot 2 in scene 1 (e.g. shot_1_2), and certain middle shots
+        should_fail_first_try = (
+            shot.id in ("shot_1_2", "shot_2_2", "shot_3_2")
+            or shot.id.endswith("_2")
+        )
+
+        if attempt == 1 and should_fail_first_try:
+            char_name = bible.characters[0].name if bible.characters else "Protagonist"
+            return CritiqueResult(
+                shot_id=shot.id,
+                passed=False,
+                score=0.52,
+                reasons=[
+                    f"Character {char_name}'s wardrobe drifted from crimson jacket to navy blue (drift vs visual bible)",
+                    "Lighting contrast too low compared to style palette requirements",
+                    "Volumetric haze density inconsistent across frame boundary",
+                ],
+                suggested_prompt_fix=(
+                    f"Enforce exact crimson jacket #990000 with silver buckles for {char_name}, "
+                    f"increase directional rim lighting contrast, align with {bible.style.palette[1]}"
+                ),
+            )
+
+        # Passes on retry (attempt > 1) or compliant shots
         return CritiqueResult(
             shot_id=shot.id,
             passed=True,
-            score=0.92,
-            reasons=["Lighting matches style bible", "Character continuity preserved"],
+            score=0.94 if attempt > 1 else 0.91,
+            reasons=[
+                "Visual bible style palette strictly respected",
+                "Character facial consistency and costume match reference sheet",
+                "Camera perspective and pacing optimal",
+            ],
             suggested_prompt_fix=None,
         )
 
 
 class MockTTSProvider(BaseTTSProvider):
-    """Generates mock audio voiceover files."""
+    """Generates mock synthesized voiceover audio files."""
 
     async def generate_voiceover(
         self,
         text: str,
+        duration_s: Optional[float] = None,
         voice_name: Optional[str] = None,
-        job_dir: Optional[str] = None,
+        job_dir: Optional[Path] = None,
         shot_id: Optional[str] = None,
     ) -> str:
-        return f"/media/{shot_id or 'vo'}.wav"
+        if settings.MOCK_DELAY_S > 0:
+            await asyncio.sleep(min(0.1, settings.MOCK_DELAY_S))
+
+        filename = f"{shot_id or 'vo'}_speech.m4a"
+        out_path = (job_dir or Path("./data")) / filename
+
+        word_count = len(text.split())
+        est_dur = max(1.5, min(duration_s or 8.0, word_count * 0.35))
+        dur_str = f"{est_dur:.2f}"
+
+        cmd = [
+            "ffmpeg", "-y",
+            "-f", "lavfi",
+            "-i", f"sine=frequency=360:duration={dur_str},volume=0.3,afade=t=in:ss=0:d=0.1,afade=t=out:st={est_dur-0.2:.2f}:d=0.2",
+            "-c:a", "aac",
+            "-b:a", "128k",
+            str(out_path),
+        ]
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        await proc.wait()
+        return str(out_path)
 
 
 class MockMusicProvider(BaseMusicProvider):
-    """Generates mock background music tracks."""
+    """Generates mock background ambient soundtrack via harmonic synthesis."""
 
     async def generate_music(
         self,
         prompt: str,
         duration_s: float,
-        job_dir: Optional[str] = None,
+        job_dir: Optional[Path] = None,
     ) -> str:
-        return "/media/soundtrack.mp3"
+        if settings.MOCK_DELAY_S > 0:
+            await asyncio.sleep(min(0.1, settings.MOCK_DELAY_S))
+
+        filename = "soundtrack.m4a"
+        out_path = (job_dir or Path("./data")) / filename
+
+        dur_str = f"{duration_s:.2f}"
+        fade_out_start = f"{max(0.5, duration_s - 2.0):.2f}"
+
+        synth_expr = (
+            "sin(2*PI*220*t)*0.15 + sin(2*PI*329.63*t)*0.12 + sin(2*PI*440*t)*0.08"
+        )
+        cmd = [
+            "ffmpeg", "-y",
+            "-f", "lavfi",
+            "-i", f"aevalsrc={synth_expr}:d={dur_str}:s=44100,volume=0.4,afade=t=in:ss=0:d=1.5,afade=t=out:st={fade_out_start}:d=2.0",
+            "-c:a", "aac",
+            "-b:a", "192k",
+            str(out_path),
+        ]
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        await proc.wait()
+        return str(out_path)
