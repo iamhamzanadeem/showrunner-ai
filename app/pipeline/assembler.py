@@ -3,8 +3,59 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 import subprocess
-from typing import List, Tuple
+from typing import Dict, List, Optional, Tuple
 from app.models import Job
+
+# Max speed-up applied to a voiceover that is longer than its shot before it is allowed
+# to spill into the next shot (subsequent lines are then pushed back, never overlapped).
+VO_MAX_TEMPO = 1.25
+VO_LEAD_IN_S = 0.3
+VO_GAP_S = 0.15
+
+
+def _probe_duration(path: Path) -> Optional[float]:
+    """Returns media duration in seconds via ffprobe, or None if unavailable."""
+    try:
+        out = subprocess.run(
+            [
+                "ffprobe", "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                str(path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        return float(out.stdout.strip())
+    except Exception:
+        return None
+
+
+def schedule_voiceovers(
+    items: List[Tuple[str, float, float, Optional[float]]],
+) -> Dict[str, Dict[str, float]]:
+    """Plans when each voiceover line plays so lines never overlap.
+
+    items: (shot_id, shot_start_s, shot_duration_s, vo_duration_s or None) in timeline order.
+    Returns {shot_id: {"start": s, "end": s, "tempo": t}}. Real TTS lines often run longer
+    than a 4-6s shot; they are sped up by at most VO_MAX_TEMPO and otherwise pushed later.
+    """
+    plan: Dict[str, Dict[str, float]] = {}
+    prev_end = 0.0
+    for shot_id, shot_start, shot_dur, vo_dur in items:
+        slot = max(0.5, shot_dur - VO_LEAD_IN_S)
+        tempo = 1.0
+        if vo_dur is None:
+            vo_dur = min(slot, 1.5)
+        if vo_dur > slot:
+            tempo = min(VO_MAX_TEMPO, vo_dur / slot)
+        eff = vo_dur / tempo
+        start = max(shot_start + VO_LEAD_IN_S, prev_end + VO_GAP_S if prev_end else 0.0)
+        end = start + eff
+        plan[shot_id] = {"start": start, "end": end, "tempo": tempo}
+        prev_end = end
+    return plan
 
 
 def _format_srt_time(seconds: float) -> str:
@@ -16,8 +67,13 @@ def _format_srt_time(seconds: float) -> str:
     return f"{hrs:02d}:{mins:02d}:{secs:02d},{millis:03d}"
 
 
-def generate_srt(job: Job, srt_path: Path) -> Path:
-    """Generates an SRT subtitle file from shots with voiceover lines."""
+def generate_srt(
+    job: Job, srt_path: Path, vo_timings: Optional[Dict[str, Dict[str, float]]] = None
+) -> Path:
+    """Generates an SRT subtitle file from shots with voiceover lines.
+
+    When vo_timings (from schedule_voiceovers) is given, captions follow the actual audio.
+    """
     current_time = 0.0
     entries = []
     index = 1
@@ -27,9 +83,13 @@ def generate_srt(job: Job, srt_path: Path) -> Path:
             for shot in scene.shots:
                 shot_duration = shot.duration_s
                 if shot.vo_line and shot.vo_line.strip():
-                    start_s = current_time + 0.3
-                    vo_duration = min(shot_duration - 0.4, max(1.5, len(shot.vo_line.split()) * 0.35))
-                    end_s = start_s + vo_duration
+                    timing = (vo_timings or {}).get(shot.id)
+                    if timing:
+                        start_s, end_s = timing["start"], timing["end"]
+                    else:
+                        start_s = current_time + 0.3
+                        vo_duration = min(shot_duration - 0.4, max(1.5, len(shot.vo_line.split()) * 0.35))
+                        end_s = start_s + vo_duration
 
                     start_str = _format_srt_time(start_s)
                     end_str = _format_srt_time(end_s)
@@ -60,7 +120,7 @@ async def assemble_video(job: Job, job_dir: Path, version: int = 1) -> Tuple[str
     # 1. Normalize each shot clip
     normalized_clips: List[Path] = []
     current_timeline_offset = 0.0
-    vo_audio_inputs: List[Tuple[int, Path]] = []  # (offset_ms, vo_path)
+    vo_items: List[Tuple[str, float, float, Path]] = []  # (shot_id, start_s, dur_s, vo_path)
 
     for scene in job.plan.scenes:
         shots_in_scene = len(scene.shots)
@@ -124,8 +184,7 @@ async def assemble_video(job: Job, job_dir: Path, version: int = 1) -> Tuple[str
 
             # Check if this shot has a VO track
             if shot.audio_url and Path(shot.audio_url).exists():
-                offset_ms = int((current_timeline_offset + 0.3) * 1000)
-                vo_audio_inputs.append((offset_ms, Path(shot.audio_url)))
+                vo_items.append((shot.id, current_timeline_offset, dur, Path(shot.audio_url)))
 
             current_timeline_offset += dur
 
@@ -148,9 +207,19 @@ async def assemble_video(job: Job, job_dir: Path, version: int = 1) -> Tuple[str
     )
     await proc_concat.wait()
 
+    total_duration = current_timeline_offset
+
+    # Schedule VO lines so long real-TTS lines don't talk over each other.
+    vo_durations = await asyncio.gather(
+        *[asyncio.to_thread(_probe_duration, p) for (_, _, _, p) in vo_items]
+    )
+    vo_timings = schedule_voiceovers(
+        [(sid, start, dur, vd) for (sid, start, dur, _), vd in zip(vo_items, vo_durations)]
+    )
+
     # 3. Generate captions SRT
     srt_path = job_dir / "captions.srt"
-    generate_srt(job, srt_path)
+    generate_srt(job, srt_path, vo_timings=vo_timings)
 
     # 4. Prepare Audio Mixing (Soundtrack + delayed VO)
     music_file = Path(job.soundtrack_url) if job.soundtrack_url and Path(job.soundtrack_url).exists() else None
@@ -173,13 +242,22 @@ async def assemble_video(job: Job, job_dir: Path, version: int = 1) -> Tuple[str
     if music_file and music_file.exists():
         input_args.extend(["-i", str(music_file)])
         bgm_idx = len(input_args) // 2 - 1
-        filter_complex_parts.append(f"[{bgm_idx}:a]volume=0.25[bgm]")
+        fade_st = max(0.0, total_duration - 1.5)
+        filter_complex_parts.append(
+            f"[{bgm_idx}:a]volume=0.25,afade=t=out:st={fade_st:.2f}:d=1.5[bgm]"
+        )
         audio_mix_inputs.append("[bgm]")
 
-    for idx, (offset_ms, vo_path) in enumerate(vo_audio_inputs):
+    for idx, (shot_id, _start, _dur, vo_path) in enumerate(vo_items):
         input_args.extend(["-i", str(vo_path)])
         stream_idx = len(input_args) // 2 - 1
-        filter_complex_parts.append(f"[{stream_idx}:a]adelay={offset_ms}|{offset_ms}[vo_{idx}]")
+        timing = vo_timings[shot_id]
+        offset_ms = int(timing["start"] * 1000)
+        tempo = timing["tempo"]
+        tempo_filter = f"atempo={tempo:.3f}," if tempo > 1.01 else ""
+        filter_complex_parts.append(
+            f"[{stream_idx}:a]{tempo_filter}adelay={offset_ms}|{offset_ms}[vo_{idx}]"
+        )
         audio_mix_inputs.append(f"[vo_{idx}]")
 
     has_audio = len(audio_mix_inputs) > 0
@@ -189,7 +267,9 @@ async def assemble_video(job: Job, job_dir: Path, version: int = 1) -> Tuple[str
         else:
             joined_inputs = "".join(audio_mix_inputs)
             filter_complex_parts.append(
-                f"{joined_inputs}amix=inputs={len(audio_mix_inputs)}:duration=first:dropout_transition=2[aout]"
+                # normalize=0: keep VO at full level instead of dividing every input by N;
+                # duration=longest + output -t: music shorter than the cut doesn't truncate VO.
+                f"{joined_inputs}amix=inputs={len(audio_mix_inputs)}:duration=longest:dropout_transition=2:normalize=0[aout]"
             )
 
     # Subtitle burn-in filter
@@ -208,6 +288,7 @@ async def assemble_video(job: Job, job_dir: Path, version: int = 1) -> Tuple[str
             "-pix_fmt", "yuv420p",
             "-c:a", "aac",
             "-b:a", "192k",
+            "-t", f"{total_duration:.2f}",
             str(final_video),
         ])
     else:
@@ -237,6 +318,7 @@ async def assemble_video(job: Job, job_dir: Path, version: int = 1) -> Tuple[str
                 "-c:v", "libx264",
                 "-pix_fmt", "yuv420p",
                 "-c:a", "aac",
+                "-t", f"{total_duration:.2f}",
                 str(final_video),
             ])
         else:
