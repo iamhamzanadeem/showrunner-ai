@@ -122,6 +122,53 @@ def _resolve_existing_upload(url: Optional[str]) -> Optional[str]:
     return None
 
 
+def _existing_job_media(job: Job, url: Optional[str]) -> bool:
+    """True if a /media/<job_id>/<file> URL points at an existing file of this job."""
+    if not url:
+        return False
+    prefix = f"/media/{job.id}/"
+    if not url.startswith(prefix):
+        return False
+    jobs_root = (settings.DATA_DIR / "jobs").resolve()
+    candidate = (jobs_root / job.id / url[len(prefix):]).resolve()
+    return candidate.is_relative_to(jobs_root) and candidate.is_file()
+
+
+IN_FLIGHT_JOB_STATUSES = {
+    JobStatus.queued,
+    JobStatus.planning,
+    JobStatus.generating,
+    JobStatus.critiquing,
+    JobStatus.assembling,
+}
+IN_FLIGHT_SHOT_STATUSES = {ShotStatus.generating, ShotStatus.critiquing, ShotStatus.retrying}
+INTERRUPTED_MESSAGE = "Interrupted by server restart"
+
+
+def recover_interrupted_job(job: Job) -> bool:
+    """
+    Marks a job that was in flight when the process died as no longer busy (Fix #7).
+    - Fresh productions become `failed` (resumable via POST /api/jobs/{id}/resume).
+    - Interrupted refinements of a job that already has a cut fall back to `completed`
+      so the previous version stays viewable and chat edits are allowed again.
+    Returns True if the job was modified.
+    """
+    if job.status not in IN_FLIGHT_JOB_STATUSES:
+        return False
+    if job.versions and job.final_video_url:
+        job.status = JobStatus.completed
+        job.error = f"{INTERRUPTED_MESSAGE} during refinement; showing last completed version."
+    else:
+        job.status = JobStatus.failed
+        job.error = f"{INTERRUPTED_MESSAGE}. Use Resume to continue from completed shots."
+    if job.plan:
+        for scene in job.plan.scenes:
+            for shot in scene.shots:
+                if shot.status in IN_FLIGHT_SHOT_STATUSES:
+                    shot.status = ShotStatus.failed
+    return True
+
+
 class ShotProductionError(RuntimeError):
     """Raised when a shot produced no usable clip after all attempts (fatal for the job)."""
 
@@ -154,6 +201,11 @@ async def _produce_shot(
     best_clip_path: Optional[Path] = None
     best_keyframe_url: Optional[str] = None
     last_error: Optional[BaseException] = None
+
+    def _record_operation(op_name: str) -> None:
+        # Persist the Veo long-running operation id so an interrupted job can be inspected/recovered.
+        shot.veo_operation_name = op_name
+        save_job_state(job)
 
     while attempt <= max_attempts:
         await event_bus.publish(
@@ -199,6 +251,7 @@ async def _produce_shot(
                 shot_num=s_idx + 1,
                 attempt=attempt,
                 reference_images=_shot_reference_sheets(job, shot, limit=3),
+                on_operation_started=_record_operation,
             )
         except asyncio.CancelledError:
             raise
@@ -207,7 +260,7 @@ async def _produce_shot(
             logger.warning("Attempt %d for %s failed: %s", attempt, shot.id, exc)
             await event_bus.publish(
                 job_id=job.id,
-                step="RETRY" if attempt < max_attempts else "ERROR",
+                step="RETRY",  # never "ERROR": that is terminal for SSE subscribers
                 message=f"Generation attempt #{attempt} for {shot.id} failed: {exc}",
                 shot_id=shot.id,
                 scene_id=scene.id,
@@ -343,6 +396,7 @@ async def run_pipeline(job: Job) -> None:
     """Full end-to-end agent production loop: Plan -> Ref -> Assets -> Critic Loop -> Assembly."""
     job_dir = settings.get_job_dir(job.id)
     providers = get_providers()
+    job.error = None
 
     try:
         # STEP 1: PLANNING STAGE
@@ -361,6 +415,8 @@ async def run_pipeline(job: Job) -> None:
         )
 
         for char in plan.bible.characters:
+            if _existing_job_media(job, job.character_refs.get(char.name)):
+                continue  # resume: sheet already generated
             ref_path = await providers.image.generate_ref_sheet(
                 entity_type="character",
                 name=char.name,
@@ -380,6 +436,8 @@ async def run_pipeline(job: Job) -> None:
             )
 
         for prod in plan.bible.products:
+            if _existing_job_media(job, job.product_refs.get(prod.name)):
+                continue  # resume: sheet already generated
             ref_path = await providers.image.generate_ref_sheet(
                 entity_type="product",
                 name=prod.name,
@@ -411,11 +469,14 @@ async def run_pipeline(job: Job) -> None:
             step="MUSIC",
             message=f"Synthesizing atmospheric soundtrack score ({total_duration:.1f}s, mood: '{plan.bible.style.mood}')...",
         )
-        music_path = await providers.music.generate_music(
-            prompt=plan.bible.style.mood,
-            duration_s=total_duration,
-            job_dir=job_dir,
-        )
+        if job.soundtrack_url and Path(job.soundtrack_url).is_file():
+            music_path = Path(job.soundtrack_url)  # resume: soundtrack already generated
+        else:
+            music_path = await providers.music.generate_music(
+                prompt=plan.bible.style.mood,
+                duration_s=total_duration,
+                job_dir=job_dir,
+            )
         job.soundtrack_url = str(music_path)
         await event_bus.publish(
             job_id=job.id,
@@ -427,6 +488,8 @@ async def run_pipeline(job: Job) -> None:
         # Generate voiceover audio tracks
         for scene in plan.scenes:
             for shot in scene.shots:
+                if shot.audio_url and Path(shot.audio_url).is_file():
+                    continue  # resume: voiceover already generated
                 if shot.vo_line and shot.vo_line.strip():
                     await event_bus.publish(
                         job_id=job.id,
@@ -453,6 +516,12 @@ async def run_pipeline(job: Job) -> None:
                 prev_shot_id: Optional[str] = None
 
                 for s_idx, shot in enumerate(scene.shots):
+                    if shot.status == ShotStatus.passed and shot.video_url and Path(shot.video_url).is_file():
+                        # resume: shot already rendered and accepted
+                        last_clip_path = Path(shot.video_url)
+                        prev_shot_id = shot.id
+                        continue
+
                     shot.status = ShotStatus.generating
                     save_job_state(job)
 

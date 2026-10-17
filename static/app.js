@@ -636,7 +636,8 @@ document.addEventListener("DOMContentLoaded", () => {
         renderChatHistory(job.messages);
       }
 
-      if (job.status === "done") {
+      if (job.status === "completed" || job.status === "done") {
+        hideResumeButton();
         if (job.final_video_url) {
           displayMasterVideo(job.final_video_url, job.poster_url);
         }
@@ -645,14 +646,51 @@ document.addEventListener("DOMContentLoaded", () => {
         resetSubmitBtn();
       } else if (job.status === "failed") {
         updateProgress(100, "Job failed");
+        if (job.error) appendLog("ERROR", job.error);
         resetSubmitBtn();
+        showResumeButton();
       } else {
+        hideResumeButton();
         // Active running job -> connect to SSE
         connectJobEvents(job.id);
       }
     } catch (err) {
       console.error("Error loading job", err);
     }
+  }
+
+  // 12b. Resume a failed / interrupted production (reuses completed assets)
+  function hideResumeButton() {
+    const btn = document.getElementById("resume-btn");
+    if (btn) btn.remove();
+  }
+
+  function showResumeButton() {
+    if (!currentJobId || document.getElementById("resume-btn")) return;
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.id = "resume-btn";
+    btn.className = "btn btn-primary";
+    btn.style.margin = "12px 0";
+    btn.textContent = "↻ Resume production";
+    btn.title = "Continue this production, reusing every shot already rendered";
+    chatRefinementCard.parentNode.insertBefore(btn, chatRefinementCard);
+    btn.addEventListener("click", async () => {
+      btn.disabled = true;
+      try {
+        const res = await authedFetch(`/api/jobs/${currentJobId}/resume`, { method: "POST" });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.detail || `Resume failed (${res.status})`);
+        }
+        hideResumeButton();
+        appendLog("INFO", "Resuming production from completed shots...");
+        connectJobEvents(currentJobId);
+      } catch (err) {
+        appendLog("ERROR", err.message);
+        btn.disabled = false;
+      }
+    });
   }
 
   // 13. Subscribe to SSE events
@@ -830,6 +868,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
       case "ERROR":
         updateProgress(100, "Error halted pipeline");
+        if (!currentJob || !currentJob.final_video_url) showResumeButton();
         document.querySelectorAll(".shot-card.reshooting").forEach((c) => c.classList.remove("reshooting"));
         document.querySelectorAll(".reshooting-badge").forEach((b) => b.remove());
         resetSubmitBtn();

@@ -4,6 +4,7 @@ import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 import json
+import logging
 from pathlib import Path
 from typing import Any, AsyncIterator, Dict, List, Optional
 import uuid
@@ -31,7 +32,7 @@ from app.models import (
     JobSummaryResponse,
     VideoMode,
 )
-from app.pipeline.orchestrator import run_pipeline, run_refinement
+from app.pipeline.orchestrator import recover_interrupted_job, run_pipeline, run_refinement
 from app.pipeline.planner import save_job_state
 from app.security import (
     auth_required,
@@ -44,6 +45,52 @@ from app.security import (
 
 # In-memory fast cache of active jobs
 jobs_db: Dict[str, Job] = {}
+
+# Strong references to running background tasks so they are never garbage-collected mid-run (Fix #8)
+_background_tasks: set[asyncio.Task] = set()
+# Job ids whose pipeline/refinement task is currently running in this process
+_running_jobs: set[str] = set()
+
+logger = logging.getLogger("showrunner.main")
+
+
+def spawn_job_task(job_id: str, coro) -> asyncio.Task:
+    """Starts a background pipeline task, keeping a strong reference until it finishes."""
+    task = asyncio.create_task(coro, name=f"job:{job_id}")
+    _background_tasks.add(task)
+    _running_jobs.add(job_id)
+
+    def _done(t: asyncio.Task) -> None:
+        _background_tasks.discard(t)
+        _running_jobs.discard(job_id)
+        if not t.cancelled() and t.exception() is not None:
+            logger.info("Background task for %s ended with error: %s", job_id, t.exception())
+
+    task.add_done_callback(_done)
+    return task
+
+
+def recover_interrupted_jobs() -> int:
+    """On startup, marks jobs left in-flight by a previous process as interrupted (Fix #7)."""
+    jobs_dir = settings.DATA_DIR / "jobs"
+    if not jobs_dir.exists():
+        return 0
+    recovered = 0
+    for job_json in jobs_dir.glob("*/job.json"):
+        try:
+            job = Job.model_validate(json.loads(job_json.read_text(encoding="utf-8")))
+        except Exception as exc:
+            logger.warning("Skipping unreadable job file %s: %s", job_json, exc)
+            continue
+        if job.id in _running_jobs:
+            continue
+        if recover_interrupted_job(job):
+            save_job_state(job)
+            jobs_db.pop(job.id, None)
+            recovered += 1
+    if recovered:
+        logger.warning("Recovered %d interrupted job(s) after restart.", recovered)
+    return recovered
 
 
 def load_job(job_id: str) -> Optional[Job]:
@@ -70,6 +117,7 @@ def load_job(job_id: str) -> Optional[Job]:
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Application startup and shutdown hooks."""
     settings.DATA_DIR.mkdir(parents=True, exist_ok=True)
+    recover_interrupted_jobs()
     yield
 
 
@@ -194,7 +242,7 @@ async def create_job(request: Request) -> Dict[str, Any]:
     )
 
     # Launch full agent production pipeline background task
-    asyncio.create_task(run_pipeline(job))
+    spawn_job_task(job.id, run_pipeline(job))
 
     return {
         "id": job.id,
@@ -301,6 +349,12 @@ async def chat_job_refinement(job_id: str, payload: ChatRequest) -> Dict[str, An
             detail=f"Job '{job_id}' is currently busy in status '{job.status.value}'. Please wait for completion.",
         )
 
+    if job.status == JobStatus.failed and not job.final_video_url:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This production never finished. Resume it first (POST /api/jobs/{id}/resume).",
+        )
+
     consume_daily_quota()
 
     # Append user message to chat history
@@ -310,7 +364,7 @@ async def chat_job_refinement(job_id: str, payload: ChatRequest) -> Dict[str, An
     save_job_state(job)
 
     # Launch refinement in background
-    asyncio.create_task(run_refinement(job, message))
+    spawn_job_task(job.id, run_refinement(job, message))
 
     next_ver = len(job.versions) + 1
     return {
@@ -319,6 +373,33 @@ async def chat_job_refinement(job_id: str, payload: ChatRequest) -> Dict[str, An
         "message": message,
         "target_version": next_ver,
     }
+
+
+@app.post("/api/jobs/{job_id}/resume", dependencies=[Depends(require_demo_token)])
+async def resume_job(job_id: str) -> Dict[str, Any]:
+    """
+    Resumes a failed/interrupted production, reusing every asset already generated
+    (reference sheets, soundtrack, voiceover, accepted shots) and re-rendering the rest.
+    """
+    job = load_job(job_id)
+    if not job:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Job '{job_id}' not found.")
+    if job.id in _running_jobs:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Job is already running.")
+    if job.status != JobStatus.failed:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Only failed jobs can be resumed (current status '{job.status.value}').",
+        )
+
+    consume_daily_quota()
+
+    job.status = JobStatus.queued
+    job.error = None
+    save_job_state(job)
+    await event_bus.publish(job_id=job.id, step="INFO", message=f"Resuming production for {job.id}...")
+    spawn_job_task(job.id, run_pipeline(job))
+    return {"status": "resuming", "job_id": job.id}
 
 
 @app.get("/api/jobs/{job_id}/events")

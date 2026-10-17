@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-import asyncio
 from datetime import datetime, timezone
 import logging
+import os
+import uuid
 from app.config import settings
 from app.events import event_bus
 from app.models import Job, JobStatus, Plan
@@ -16,8 +17,20 @@ def save_job_state(job: Job) -> None:
     job.updated_at = datetime.now(timezone.utc).isoformat()
     job_dir = settings.get_job_dir(job.id)
     job_file = job_dir / "job.json"
-    with open(job_file, "w", encoding="utf-8") as f:
-        f.write(job.model_dump_json(indent=2))
+    # Atomic write: a crash mid-write must never leave a truncated job.json behind.
+    tmp_file = job_dir / f".job.json.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp"
+    try:
+        with open(tmp_file, "w", encoding="utf-8") as f:
+            f.write(job.model_dump_json(indent=2))
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_file, job_file)
+    finally:
+        if tmp_file.exists():
+            try:
+                tmp_file.unlink()
+            except OSError:
+                pass
 
 
 async def run_planner(job: Job) -> Plan:

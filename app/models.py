@@ -103,6 +103,7 @@ class Shot(BaseModel):
     is_flagged_fallback: bool = False
     attempts: List[ShotAttempt] = Field(default_factory=list)
     prompt_history: List[str] = Field(default_factory=list)
+    veo_operation_name: Optional[str] = None
 
 
 class Scene(BaseModel):

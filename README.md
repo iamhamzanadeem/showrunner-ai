@@ -214,6 +214,13 @@ Showrunner AI is packaged to run on **Google Cloud Run** with persistent Cloud S
 > **Cloud Run Architecture Requirement**:  
 > Because jobs run in-process as asyncio background tasks with an in-memory event bus, `--max-instances=1` and `--no-cpu-throttling` are required. State persists to `DATA_DIR` via Cloud Storage FUSE (`/data`), ensuring that `job.json`, keyframes, clips, audio, and master video files survive container restarts.
 
+### Restarts & Failure Handling
+
+- On startup, jobs left mid-flight by a previous process are marked `failed` ("Interrupted by server restart"); interrupted chat refinements fall back to the last completed version. Failed jobs show a **Resume production** button (`POST /api/jobs/{id}/resume`).
+- Each shot retries provider errors, then accepts its best-scoring clip; only a shot with no usable clip fails the job, and sibling scenes are cancelled immediately to avoid further paid renders.
+- The Veo operation id is persisted on each shot (`veo_operation_name`); the Veo launch call is never auto-retried (no duplicate paid jobs). Only 5xx and 429 errors are retried, with jittered backoff.
+- `job.json` is written atomically (temp file + `os.replace`).
+
 ### Demo Access Control
 
 The public service is protected by a shared demo token so strangers cannot start paid Veo jobs:
@@ -257,6 +264,7 @@ MODE=apikey GEMINI_API_KEY="your-key" ./scripts/deploy.sh
 | `GET` | `/api/jobs/{id}` | Retrieves full state, scene specifications, shot attempts, and media URLs |
 | `GET` | `/api/jobs/{id}/events` | Live Server-Sent Events (SSE) stream of agent cognition logs |
 | `POST` | `/api/jobs/{id}/chat` | Submits director instructions to refine a scene (409 if busy) |
+| `POST` | `/api/jobs/{id}/resume` | Resumes a failed/interrupted production, reusing sheets, audio and accepted shots |
 | `GET` | `/media/{path:path}` | Serves rendered production assets from `DATA_DIR` |
 
 ---

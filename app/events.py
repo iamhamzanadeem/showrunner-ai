@@ -75,10 +75,12 @@ class EventBus:
             self._subscribers[job_id].append(queue)
             past_events = list(self._history.get(job_id, []))
 
-        # Replay past events
-        for past_event in past_events:
+        # Replay past events. Only a terminal event that is the LAST one in history ends the
+        # stream; earlier terminals belong to previous runs (e.g. before a chat refinement/resume).
+        last_idx = len(past_events) - 1
+        for idx, past_event in enumerate(past_events):
             yield past_event
-            if self._is_terminal(past_event):
+            if idx == last_idx and self._is_terminal(past_event):
                 async with self.lock:
                     if job_id in self._subscribers and queue in self._subscribers[job_id]:
                         self._subscribers[job_id].remove(queue)
