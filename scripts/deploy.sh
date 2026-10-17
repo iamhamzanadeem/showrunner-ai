@@ -125,11 +125,11 @@ fi
 # ------------------------------------------------------------------------------
 DEPLOY_SECRETS_ARG=()
 # SAMPLE_JOB_IDS is passed ;-separated because gcloud splits --set-env-vars on commas.
-LIMIT_VARS="MAX_JOBS_PER_DAY=${MAX_JOBS_PER_DAY},MAX_JOBS_PER_IP_PER_DAY=${MAX_JOBS_PER_IP_PER_DAY},MAX_SHOTS_PER_JOB=${MAX_SHOTS_PER_JOB},MAX_RUNTIME_S=${MAX_RUNTIME_S},MAX_RETRIES=${MAX_RETRIES},MAX_PARALLEL_SCENES=2,SAMPLE_JOB_IDS=${SAMPLE_JOB_IDS//,/;}"
+LIMIT_VARS="MAX_JOBS_PER_DAY=${MAX_JOBS_PER_DAY},MAX_JOBS_PER_IP_PER_DAY=${MAX_JOBS_PER_IP_PER_DAY},MAX_SHOTS_PER_JOB=${MAX_SHOTS_PER_JOB},MAX_RUNTIME_S=${MAX_RUNTIME_S},MAX_RETRIES=${MAX_RETRIES},MAX_PARALLEL_SCENES=2,RECOVERY_STALE_S=1200,SAMPLE_JOB_IDS=${SAMPLE_JOB_IDS//,/;}"
 
 if [[ "${DEMO_MOCK}" == "1" ]]; then
   echo "==> Configuring DEMO_MOCK mode (zero model cost)..."
-  DEPLOY_ENV_VARS="SHOWRUNNER_PROVIDER=mock,DATA_DIR=/data,PORT=8080,${LIMIT_VARS}"
+  DEPLOY_ENV_VARS="SHOWRUNNER_PROVIDER=mock,DATA_DIR=/data,${LIMIT_VARS}"
 elif [[ "${MODE}" == "apikey" ]]; then
   echo "==> Configuring API Key mode via Secret Manager..."
   SECRET_NAME="gemini-api-key"
@@ -152,18 +152,18 @@ elif [[ "${MODE}" == "apikey" ]]; then
     --role="roles/secretmanager.secretAccessor" \
     --quiet >/dev/null
 
-  DEPLOY_ENV_VARS="SHOWRUNNER_PROVIDER=google,DATA_DIR=/data,PORT=8080,${LIMIT_VARS}"
+  DEPLOY_ENV_VARS="SHOWRUNNER_PROVIDER=google,DATA_DIR=/data,${LIMIT_VARS}"
   DEPLOY_SECRETS_ARG=( "--set-secrets=GEMINI_API_KEY=${SECRET_NAME}:latest" )
 else
   echo "==> Configuring Vertex AI mode with Workload Identity..."
-  DEPLOY_ENV_VARS="SHOWRUNNER_PROVIDER=google,GOOGLE_GENAI_USE_VERTEXAI=true,GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GOOGLE_CLOUD_LOCATION=global,VERTEX_LOCATION_MEDIA=us-central1,DATA_DIR=/data,PORT=8080,${LIMIT_VARS}"
+  DEPLOY_ENV_VARS="SHOWRUNNER_PROVIDER=google,GOOGLE_GENAI_USE_VERTEXAI=true,GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GOOGLE_CLOUD_LOCATION=global,VERTEX_LOCATION_MEDIA=us-central1,DATA_DIR=/data,${LIMIT_VARS}"
 fi
 
 # ------------------------------------------------------------------------------
 # 5. Cloud Run Service Deployment
 # ------------------------------------------------------------------------------
 echo "==> Deploying Showrunner AI service to Cloud Run..."
-gcloud run deploy "${SERVICE}" \
+gcloud run deploy "${SERVICE}" --quiet \
   --source . \
   --project "${PROJECT_ID}" \
   --region "${REGION}" \

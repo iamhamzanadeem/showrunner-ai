@@ -70,6 +70,9 @@ class Settings(BaseSettings):
     MAX_JOBS_PER_DAY: int = 0
     # CORS_ORIGINS: comma-separated list of allowed origins ("*" = any, never with credentials).
     CORS_ORIGINS: str = "*"
+    # Seconds without a job.json save before an in-flight job counts as interrupted. 0 = at
+    # startup immediately (single instance). Multi-instance Cloud Run: > Veo timeout (1200).
+    RECOVERY_STALE_S: int = 0
     # Per-job cost caps (0 = unlimited). Public deployments should set both.
     MAX_SHOTS_PER_JOB: int = 0
     MAX_RUNTIME_S: float = 0

@@ -1,0 +1,19 @@
+# Uploaded to Cloud Build by `gcloud run deploy --source .`: keep it small and secret-free.
+.gcloudignore
+.git/
+.gitignore
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+data/
+media/
+.env
+.env.*
+!.env.example
+tests/
+scratch/
+*.mp4
+*.wav
+*.mp3

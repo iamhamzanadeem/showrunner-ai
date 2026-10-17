@@ -62,7 +62,9 @@ class EventBus:
         self,
         job_id: str,
         timeout: float = 1.0,
-    ) -> AsyncIterator[AgentEvent]:
+        heartbeat: bool = False,
+        max_idle: float = 300.0,
+    ) -> AsyncIterator[Optional[AgentEvent]]:
         """
         Subscribes to a job's event stream, yielding all past events followed by live events.
         Automatically completes when terminal events (PLAN completion, ERROR, or timeout) occur.
@@ -86,16 +88,25 @@ class EventBus:
                         self._subscribers[job_id].remove(queue)
                 return
 
-        # Stream future events until terminal or timeout
+        # Stream future events until terminal or timeout. With heartbeat=True, idle periods
+        # yield None (a keep-alive tick) instead of ending the stream, until max_idle seconds
+        # pass without any event; this avoids reconnect storms during long model calls.
+        idle = 0.0
         try:
             while True:
                 try:
                     event = await asyncio.wait_for(queue.get(), timeout=timeout)
+                    idle = 0.0
                     yield event
                     if self._is_terminal(event):
                         return
                 except asyncio.TimeoutError:
-                    return
+                    if not heartbeat:
+                        return
+                    idle += timeout
+                    if idle >= max_idle:
+                        return
+                    yield None
         except asyncio.CancelledError:
             pass
         finally:
@@ -118,6 +129,9 @@ event_bus = EventBus()
 async def sse_event_stream(job_id: str) -> AsyncIterator[str]:
     """Generates Server-Sent Events formatted strings for a given job."""
     yield ": connected\n\n"
-    async for event in event_bus.subscribe(job_id):
+    async for event in event_bus.subscribe(job_id, timeout=15.0, heartbeat=True, max_idle=600.0):
+        if event is None:
+            yield ": keepalive\n\n"
+            continue
         payload = json.dumps(event.model_dump())
         yield f"event: agent_event\ndata: {payload}\n\n"

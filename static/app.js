@@ -779,10 +779,16 @@ document.addEventListener("DOMContentLoaded", () => {
 
     const url = `/api/jobs/${jobId}/events`;
     activeEventSource = new EventSource(url);
+    // The server replays history on every (re)connect: skip events already shown.
+    const seenEventIds = new Set();
 
     activeEventSource.addEventListener("agent_event", (e) => {
       try {
         const event = JSON.parse(e.data);
+        if (event.id) {
+          if (seenEventIds.has(event.id)) return;
+          seenEventIds.add(event.id);
+        }
         appendLog(event.step, event.message, event.timestamp);
 
         // Progress bar updates

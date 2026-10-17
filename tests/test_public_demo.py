@@ -117,3 +117,21 @@ def test_enforce_plan_caps_noop_when_unlimited():
     plan = _plan([8, 8, 8, 8])
     assert enforce_plan_caps(plan) == 0 and plan.total_shots == 4
     assert plan_limits_note() == ""
+
+
+def test_multi_instance_recovery_only_touches_stale_jobs(monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    from app.main import load_job, recover_interrupted_jobs
+
+    monkeypatch.setattr(settings, "RECOVERY_STALE_S", 1200)
+    fresh = Job(id="job_freshrun1", brief="b", mode=VideoMode.ad, status=JobStatus.generating)
+    save_job_state(fresh)  # updated_at = now: maybe running on a sibling instance
+    stale = Job(id="job_staleru1", brief="b", mode=VideoMode.ad, status=JobStatus.generating)
+    save_job_state(stale)
+    path = settings.DATA_DIR / "jobs" / "job_staleru1" / "job.json"
+    data = json.loads(path.read_text())
+    data["updated_at"] = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+    path.write_text(json.dumps(data))
+    assert recover_interrupted_jobs() == 1
+    assert load_job("job_freshrun1").status == JobStatus.generating
+    assert load_job("job_staleru1").status == JobStatus.failed

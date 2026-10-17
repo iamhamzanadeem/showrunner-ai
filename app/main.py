@@ -72,6 +72,25 @@ def spawn_job_task(job_id: str, coro) -> asyncio.Task:
     return task
 
 
+def _is_stale(job: Job) -> bool:
+    """True if the job has not been saved for RECOVERY_STALE_S seconds.
+
+    With several Cloud Run instances sharing the GCS-mounted DATA_DIR, an in-flight job may
+    belong to a live sibling instance; it is only treated as interrupted once its state has
+    gone quiet for longer than any single step (Veo timeout) could take.
+    """
+    threshold = settings.RECOVERY_STALE_S
+    if threshold <= 0:
+        return True
+    try:
+        updated = datetime.fromisoformat(job.updated_at or job.created_at)
+    except Exception:
+        return True
+    if updated.tzinfo is None:
+        updated = updated.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - updated).total_seconds() > threshold
+
+
 def recover_interrupted_jobs() -> int:
     """On startup, marks jobs left in-flight by a previous process as interrupted (Fix #7)."""
     jobs_dir = settings.DATA_DIR / "jobs"
@@ -84,8 +103,8 @@ def recover_interrupted_jobs() -> int:
         except Exception as exc:
             logger.warning("Skipping unreadable job file %s: %s", job_json, exc)
             continue
-        if job.id in _running_jobs:
-            continue
+        if job.id in _running_jobs or not _is_stale(job):
+            continue  # possibly still running on another Cloud Run instance
         if recover_interrupted_job(job):
             save_job_state(job)
             jobs_db.pop(job.id, None)
@@ -99,20 +118,25 @@ def load_job(job_id: str) -> Optional[Job]:
     """Loads a job from memory cache or disk."""
     if not is_valid_job_id(job_id):
         return None
-    if job_id in jobs_db:
+    # Jobs running in this process: the in-memory object is the source of truth.
+    if job_id in jobs_db and job_id in _running_jobs:
         return jobs_db[job_id]
 
+    # Otherwise re-read disk: another instance may be producing (or have finished) it.
     job_file = settings.DATA_DIR / "jobs" / job_id / "job.json"
     if job_file.exists():
         try:
             with open(job_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 job = Job.model_validate(data)
-                jobs_db[job_id] = job
-                return job
         except Exception:
-            return None
-    return None
+            return jobs_db.get(job_id)
+        # Lazy recovery of a job whose owner instance died (see _is_stale).
+        if settings.RECOVERY_STALE_S > 0 and _is_stale(job) and recover_interrupted_job(job):
+            save_job_state(job)
+        jobs_db[job_id] = job
+        return job
+    return jobs_db.get(job_id)
 
 
 @asynccontextmanager
