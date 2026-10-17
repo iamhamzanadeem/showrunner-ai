@@ -56,6 +56,17 @@ class Settings(BaseSettings):
     SR_PROVIDER_TTS: Optional[Literal["mock", "google"]] = None
     SR_PROVIDER_MUSIC: Optional[Literal["mock", "google"]] = None
 
+    # Demo access control (public deployments)
+    # DEMO_TOKEN: shared secret required on job-creating / chat POSTs. Unset => no auth (local dev).
+    DEMO_TOKEN: Optional[str] = None
+    # MAX_JOBS_PER_DAY: cap on new jobs + refinements per UTC day. 0 => unlimited.
+    MAX_JOBS_PER_DAY: int = 0
+    # CORS_ORIGINS: comma-separated list of allowed origins ("*" = any, never with credentials).
+    CORS_ORIGINS: str = "*"
+    # Upload limits for reference images
+    MAX_UPLOAD_FILES: int = 5
+    MAX_UPLOAD_BYTES: int = 10 * 1024 * 1024
+
     @property
     def resolved_provider(self) -> Literal["mock", "google"]:
         """Resolves active provider based on environment and credentials."""

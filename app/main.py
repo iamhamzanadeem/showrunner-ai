@@ -9,6 +9,7 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 import uuid
 
 from fastapi import (
+    Depends,
     FastAPI,
     HTTPException,
     Request,
@@ -32,6 +33,14 @@ from app.models import (
 )
 from app.pipeline.orchestrator import run_pipeline, run_refinement
 from app.pipeline.planner import save_job_state
+from app.security import (
+    auth_required,
+    consume_daily_quota,
+    is_valid_job_id,
+    require_demo_token,
+    safe_upload_name,
+    sniff_image_ok,
+)
 
 # In-memory fast cache of active jobs
 jobs_db: Dict[str, Job] = {}
@@ -39,10 +48,12 @@ jobs_db: Dict[str, Job] = {}
 
 def load_job(job_id: str) -> Optional[Job]:
     """Loads a job from memory cache or disk."""
+    if not is_valid_job_id(job_id):
+        return None
     if job_id in jobs_db:
         return jobs_db[job_id]
 
-    job_file = settings.get_job_dir(job_id) / "job.json"
+    job_file = settings.DATA_DIR / "jobs" / job_id / "job.json"
     if job_file.exists():
         try:
             with open(job_file, "r", encoding="utf-8") as f:
@@ -69,13 +80,14 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS middleware for open development
+# CORS: the bundled UI is same-origin; cross-origin callers get no credentialed access.
+_cors_origins = [o.strip() for o in settings.CORS_ORIGINS.split(",") if o.strip()] or ["*"]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=_cors_origins,
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type", "X-Demo-Token"],
 )
 
 
@@ -89,10 +101,11 @@ async def get_health() -> HealthResponse:
         storage_dir=str(settings.DATA_DIR.resolve()),
         providers=settings.get_all_modality_providers(),
         models=settings.get_configured_models(),
+        auth_required=auth_required(),
     )
 
 
-@app.post("/api/jobs", status_code=status.HTTP_201_CREATED)
+@app.post("/api/jobs", status_code=status.HTTP_201_CREATED, dependencies=[Depends(require_demo_token)])
 async def create_job(request: Request) -> Dict[str, Any]:
     """
     Creates a new video production job and starts the planning agent loop.
@@ -105,41 +118,54 @@ async def create_job(request: Request) -> Dict[str, Any]:
     saved_ref_images: List[str] = []
 
     job_id = f"job_{uuid.uuid4().hex[:10]}"
-    job_dir = settings.get_job_dir(job_id)
+    pending_uploads: List[tuple[str, bytes]] = []
 
     if "application/json" in content_type:
         payload = await request.json()
-        brief = payload.get("brief", "").strip()
-        mode_str = payload.get("mode", "ad")
+        brief = str(payload.get("brief", "")).strip()
+        mode_str = str(payload.get("mode", "ad"))
     else:
         form = await request.form()
         brief = str(form.get("brief", "")).strip()
         mode_str = str(form.get("mode", "ad"))
 
-        # Process uploaded files if any
-        ref_files = form.getlist("ref_images")
-        if ref_files:
-            ref_dir = job_dir / "ref_images"
-            ref_dir.mkdir(parents=True, exist_ok=True)
-            for f in ref_files:
-                filename = getattr(f, "filename", None)
-                if filename:
-                    target_path = ref_dir / filename
-                    with open(target_path, "wb") as buffer:
-                        if hasattr(f, "read"):
-                            content = await f.read()
-                        elif hasattr(f, "file"):
-                            content = f.file.read()
-                        else:
-                            content = b""
-                        buffer.write(content)
-                    saved_ref_images.append(f"/media/{job_id}/ref_images/{filename}")
+        # Validate uploaded reference images (never trust client filenames)
+        ref_files = [f for f in form.getlist("ref_images") if getattr(f, "filename", None)]
+        if len(ref_files) > settings.MAX_UPLOAD_FILES:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail=f"At most {settings.MAX_UPLOAD_FILES} reference images are allowed.",
+            )
+        for f in ref_files:
+            safe_name = safe_upload_name(f.filename)
+            content = await f.read()
+            if len(content) > settings.MAX_UPLOAD_BYTES:
+                raise HTTPException(
+                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                    detail=f"Reference image exceeds {settings.MAX_UPLOAD_BYTES // (1024 * 1024)} MB.",
+                )
+            if not sniff_image_ok(content, Path(safe_name).suffix):
+                raise HTTPException(
+                    status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+                    detail="Uploaded file content is not a valid PNG, JPG or WEBP image.",
+                )
+            pending_uploads.append((safe_name, content))
 
     if not brief:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="Creative brief is required.",
         )
+
+    consume_daily_quota()
+
+    job_dir = settings.get_job_dir(job_id)
+    if pending_uploads:
+        ref_dir = job_dir / "ref_images"
+        ref_dir.mkdir(parents=True, exist_ok=True)
+        for safe_name, content in pending_uploads:
+            (ref_dir / safe_name).write_bytes(content)
+            saved_ref_images.append(f"/media/{job_id}/ref_images/{safe_name}")
 
     try:
         mode = VideoMode(mode_str)
@@ -242,7 +268,7 @@ async def get_job(job_id: str) -> Job:
     return job
 
 
-@app.post("/api/jobs/{job_id}/chat")
+@app.post("/api/jobs/{job_id}/chat", dependencies=[Depends(require_demo_token)])
 async def chat_job_refinement(job_id: str, payload: ChatRequest) -> Dict[str, Any]:
     """
     Submits a director chat message to refine a completed job.
@@ -274,6 +300,8 @@ async def chat_job_refinement(job_id: str, payload: ChatRequest) -> Dict[str, An
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Job '{job_id}' is currently busy in status '{job.status.value}'. Please wait for completion.",
         )
+
+    consume_daily_quota()
 
     # Append user message to chat history
     user_msg = ChatMessage(role="user", text=message)
@@ -317,9 +345,9 @@ async def get_job_events(job_id: str) -> StreamingResponse:
 @app.get("/media/{file_path:path}")
 async def get_media_file(file_path: str) -> FileResponse:
     """Serves generated job media assets from active DATA_DIR."""
-    target_path = (settings.DATA_DIR / "jobs" / file_path).resolve()
-    data_dir_resolved = settings.DATA_DIR.resolve()
-    if not str(target_path).startswith(str(data_dir_resolved)) or not target_path.is_file():
+    jobs_root = (settings.DATA_DIR / "jobs").resolve()
+    target_path = (jobs_root / file_path).resolve()
+    if not target_path.is_relative_to(jobs_root) or not target_path.is_file():
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Media asset not found.",

@@ -67,8 +67,11 @@ def test_create_job_json_and_fetch(client):
     assert job_data["brief"] == payload["brief"]
 
 
+PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
+
+
 def test_create_job_multipart_with_ref_image(client):
-    file_content = b"fake-image-bytes"
+    file_content = PNG_BYTES
     files = [
         ("ref_images", ("logo.png", io.BytesIO(file_content), "image/png"))
     ]
@@ -81,7 +84,12 @@ def test_create_job_multipart_with_ref_image(client):
     job_info = response.json()
     assert job_info["mode"] == "short_film"
     assert len(job_info["reference_images"]) == 1
-    assert "logo.png" in job_info["reference_images"][0]
+    ref_url = job_info["reference_images"][0]
+    # Server-generated UUID filename, client name discarded
+    assert "logo" not in ref_url
+    assert ref_url.endswith(".png")
+    stored = settings.DATA_DIR / "jobs" / job_info["id"] / "ref_images" / ref_url.rsplit("/", 1)[-1]
+    assert stored.read_bytes() == file_content
 
 
 def test_create_job_missing_brief(client):
@@ -115,3 +123,94 @@ async def test_event_bus_direct():
     assert len(history) >= 1
     assert history[0].step == "PLAN"
     assert "Initializing test" in history[0].message
+
+
+# --- Security: uploads, auth, quota, media path ----------------------------------------
+
+
+def test_upload_path_traversal_filename_is_neutralised(client):
+    files = [("ref_images", ("../../../../evil.png", io.BytesIO(PNG_BYTES), "image/png"))]
+    res = client.post("/api/jobs", data={"brief": "Traversal attempt", "mode": "ad"}, files=files)
+    assert res.status_code == 201
+    ref_url = res.json()["reference_images"][0]
+    assert ".." not in ref_url and "evil" not in ref_url
+    assert not (settings.DATA_DIR.parent / "evil.png").exists()
+    assert not list(settings.DATA_DIR.parent.rglob("evil.png"))
+
+
+def test_upload_absolute_filename_is_neutralised(client, tmp_path):
+    target = tmp_path / "abs_evil.png"
+    files = [("ref_images", (str(target), io.BytesIO(PNG_BYTES), "image/png"))]
+    res = client.post("/api/jobs", data={"brief": "Absolute path attempt", "mode": "ad"}, files=files)
+    assert res.status_code == 201
+    assert not target.exists()
+
+
+def test_upload_rejects_disallowed_extension(client):
+    files = [("ref_images", ("shell.php", io.BytesIO(b"<?php ?>"), "application/x-php"))]
+    res = client.post("/api/jobs", data={"brief": "Bad upload", "mode": "ad"}, files=files)
+    assert res.status_code == 415
+
+
+def test_upload_rejects_fake_image_content(client):
+    files = [("ref_images", ("fake.png", io.BytesIO(b"not really a png"), "image/png"))]
+    res = client.post("/api/jobs", data={"brief": "Bad upload", "mode": "ad"}, files=files)
+    assert res.status_code == 415
+
+
+def test_demo_token_required_when_configured(client, monkeypatch):
+    monkeypatch.setattr(settings, "DEMO_TOKEN", "s3cret")
+    health = client.get("/api/health").json()
+    assert health["auth_required"] is True
+
+    payload = {"brief": "Token protected job", "mode": "ad"}
+    assert client.post("/api/jobs", json=payload).status_code == 401
+    assert client.post("/api/jobs", json=payload, headers={"X-Demo-Token": "wrong"}).status_code == 401
+    ok = client.post("/api/jobs", json=payload, headers={"X-Demo-Token": "s3cret"})
+    assert ok.status_code == 201
+    ok_q = client.post("/api/jobs?token=s3cret", json=payload)
+    assert ok_q.status_code == 201
+
+    job_id = ok.json()["id"]
+    assert client.post(f"/api/jobs/{job_id}/chat", json={"message": "brighter"}).status_code == 401
+    # Read endpoints stay open
+    assert client.get(f"/api/jobs/{job_id}").status_code == 200
+
+
+def test_no_auth_when_token_unset(client, monkeypatch):
+    monkeypatch.setattr(settings, "DEMO_TOKEN", None)
+    assert client.get("/api/health").json()["auth_required"] is False
+    assert client.post("/api/jobs", json={"brief": "Open local dev", "mode": "ad"}).status_code == 201
+
+
+def test_daily_job_cap(client, monkeypatch):
+    monkeypatch.setattr(settings, "MAX_JOBS_PER_DAY", 2)
+    for _ in range(2):
+        assert client.post("/api/jobs", json={"brief": "Capped", "mode": "ad"}).status_code == 201
+    res = client.post("/api/jobs", json={"brief": "Capped", "mode": "ad"})
+    assert res.status_code == 429
+
+
+def test_cors_does_not_allow_credentials(client):
+    res = client.options(
+        "/api/jobs",
+        headers={"Origin": "https://evil.example", "Access-Control-Request-Method": "POST"},
+    )
+    assert res.headers.get("access-control-allow-credentials") != "true"
+
+
+def test_media_path_confined_to_jobs_dir(client):
+    secret = settings.DATA_DIR / "usage.json"
+    secret.write_text("{}")
+    assert client.get("/media/../usage.json").status_code == 404
+    assert client.get("/media/%2e%2e/usage.json").status_code == 404
+    job_dir = settings.DATA_DIR / "jobs" / "job_0123456789"
+    job_dir.mkdir(parents=True)
+    (job_dir / "clip.txt").write_text("ok")
+    assert client.get("/media/job_0123456789/clip.txt").status_code == 200
+
+
+def test_invalid_job_id_rejected(client):
+    assert client.get("/api/jobs/..").status_code in (404, 405)
+    assert client.get("/api/jobs/not_a_job").status_code == 404
+    assert not (settings.DATA_DIR / "jobs" / "not_a_job").exists()

@@ -15,9 +15,20 @@ SERVICE="${SERVICE:-showrunner-ai}"
 SA_NAME="${SA_NAME:-showrunner-sa}"
 MODE="${MODE:-vertex}"          # Options: 'vertex' (ADC via Workload Identity) or 'apikey' (Secret Manager)
 DEMO_MOCK="${DEMO_MOCK:-0}"     # Set to 1 to deploy in mock mode (zero paid API cost)
+DEMO_TOKEN="${DEMO_TOKEN:-}"    # Shared access token required to start jobs / chat edits (auto-generated if empty)
+MAX_JOBS_PER_DAY="${MAX_JOBS_PER_DAY:-20}"  # Daily cap on productions + refinements (0 = unlimited)
 
 if [[ -z "${PROJECT_ID}" ]]; then
   echo "ERROR: PROJECT_ID is required. Set PROJECT_ID=<your-project-id> or run 'gcloud config set project <id>'." >&2
+  exit 1
+fi
+
+if [[ -z "${DEMO_TOKEN}" ]]; then
+  DEMO_TOKEN="$(openssl rand -hex 16 2>/dev/null || head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+  echo "NOTE: DEMO_TOKEN not set; generated a new one (shown at the end). Re-use it with DEMO_TOKEN=... on redeploys."
+fi
+if [[ ! "${DEMO_TOKEN}" =~ ^[A-Za-z0-9._~-]+$ ]]; then
+  echo "ERROR: DEMO_TOKEN may only contain letters, digits and . _ ~ - characters." >&2
   exit 1
 fi
 
@@ -94,7 +105,7 @@ DEPLOY_SECRETS_ARG=()
 
 if [[ "${DEMO_MOCK}" == "1" ]]; then
   echo "==> Configuring DEMO_MOCK mode (zero model cost)..."
-  DEPLOY_ENV_VARS="SHOWRUNNER_PROVIDER=mock,DATA_DIR=/data,PORT=8080"
+  DEPLOY_ENV_VARS="SHOWRUNNER_PROVIDER=mock,DATA_DIR=/data,PORT=8080,DEMO_TOKEN=${DEMO_TOKEN},MAX_JOBS_PER_DAY=${MAX_JOBS_PER_DAY}"
 elif [[ "${MODE}" == "apikey" ]]; then
   echo "==> Configuring API Key mode via Secret Manager..."
   SECRET_NAME="gemini-api-key"
@@ -117,11 +128,11 @@ elif [[ "${MODE}" == "apikey" ]]; then
     --role="roles/secretmanager.secretAccessor" \
     --quiet >/dev/null
 
-  DEPLOY_ENV_VARS="SHOWRUNNER_PROVIDER=google,DATA_DIR=/data,PORT=8080"
+  DEPLOY_ENV_VARS="SHOWRUNNER_PROVIDER=google,DATA_DIR=/data,PORT=8080,DEMO_TOKEN=${DEMO_TOKEN},MAX_JOBS_PER_DAY=${MAX_JOBS_PER_DAY}"
   DEPLOY_SECRETS_ARG=( "--set-secrets=GEMINI_API_KEY=${SECRET_NAME}:latest" )
 else
   echo "==> Configuring Vertex AI mode with Workload Identity..."
-  DEPLOY_ENV_VARS="SHOWRUNNER_PROVIDER=google,GOOGLE_GENAI_USE_VERTEXAI=true,GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GOOGLE_CLOUD_LOCATION=global,VERTEX_LOCATION_MEDIA=us-central1,DATA_DIR=/data,PORT=8080"
+  DEPLOY_ENV_VARS="SHOWRUNNER_PROVIDER=google,GOOGLE_GENAI_USE_VERTEXAI=true,GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GOOGLE_CLOUD_LOCATION=global,VERTEX_LOCATION_MEDIA=us-central1,DATA_DIR=/data,PORT=8080,DEMO_TOKEN=${DEMO_TOKEN},MAX_JOBS_PER_DAY=${MAX_JOBS_PER_DAY}"
 fi
 
 # ------------------------------------------------------------------------------
@@ -156,4 +167,6 @@ echo "🎉 Showrunner AI successfully deployed!"
 echo "Service URL : ${SERVICE_URL}"
 echo "Health Check: ${SERVICE_URL}/api/health"
 echo "Web Studio  : ${SERVICE_URL}/"
+echo "Demo token  : ${DEMO_TOKEN}   (UI prompts once; API: X-Demo-Token header)"
+echo "Daily cap   : ${MAX_JOBS_PER_DAY} productions/refinements per UTC day"
 echo "=========================================================================="

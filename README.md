@@ -214,6 +214,18 @@ Showrunner AI is packaged to run on **Google Cloud Run** with persistent Cloud S
 > **Cloud Run Architecture Requirement**:  
 > Because jobs run in-process as asyncio background tasks with an in-memory event bus, `--max-instances=1` and `--no-cpu-throttling` are required. State persists to `DATA_DIR` via Cloud Storage FUSE (`/data`), ensuring that `job.json`, keyframes, clips, audio, and master video files survive container restarts.
 
+### Demo Access Control
+
+The public service is protected by a shared demo token so strangers cannot start paid Veo jobs:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `DEMO_TOKEN` | unset (no auth, local dev) | Required on `POST /api/jobs` and `POST /api/jobs/{id}/chat` via the `X-Demo-Token` header (or `?token=`). The web UI prompts once and stores it in `localStorage`. `scripts/deploy.sh` generates one if not provided and prints it. |
+| `MAX_JOBS_PER_DAY` | `0` locally, `20` in `deploy.sh` | Cap on new productions + chat refinements per UTC day (`429` when exceeded). |
+| `CORS_ORIGINS` | `*` | Allowed origins; credentials are never allowed cross-origin. |
+
+Uploaded reference images are restricted to PNG/JPG/WEBP (magic-byte checked, max 5 files x 10 MB) and stored under server-generated UUID filenames.
+
 ### Automated Deployment
 
 Run the included deployment script:

@@ -232,3 +232,4 @@ class HealthResponse(BaseModel):
     storage_dir: str
     providers: Optional[Dict[str, str]] = None
     models: Optional[Dict[str, str]] = None
+    auth_required: bool = False

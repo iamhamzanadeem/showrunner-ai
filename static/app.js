@@ -62,11 +62,45 @@ document.addEventListener("DOMContentLoaded", () => {
   let currentJob = null;
   let currentPlan = null;
 
+  // 0. Demo access token (only when the server reports auth_required)
+  const TOKEN_KEY = "showrunner_demo_token";
+  let authRequired = false;
+
+  function getDemoToken(forcePrompt = false) {
+    let token = localStorage.getItem(TOKEN_KEY) || "";
+    if ((!token || forcePrompt) && authRequired) {
+      const entered = window.prompt("This Showrunner demo is protected. Enter the access token:", "");
+      token = (entered || "").trim();
+      if (token) localStorage.setItem(TOKEN_KEY, token);
+      else localStorage.removeItem(TOKEN_KEY);
+    }
+    return token;
+  }
+
+  // POST helper: attaches X-Demo-Token, re-prompts once on 401.
+  async function authedFetch(url, options = {}) {
+    const doFetch = (token) => {
+      const headers = new Headers(options.headers || {});
+      if (token) headers.set("X-Demo-Token", token);
+      return fetch(url, { ...options, headers });
+    };
+    let res = await doFetch(getDemoToken());
+    if (res.status === 401) {
+      localStorage.removeItem(TOKEN_KEY);
+      authRequired = true;
+      const token = getDemoToken(true);
+      if (token) res = await doFetch(token);
+    }
+    return res;
+  }
+
   // 1. Fetch Health and Provider Status
   async function checkHealth() {
     try {
       const res = await fetch("/api/health");
       const data = await res.json();
+      authRequired = Boolean(data.auth_required);
+      if (authRequired) getDemoToken();
       const provider = (data.active_provider || "mock").toUpperCase();
       providerName.textContent = provider === "GOOGLE" ? "GOOGLE VEO / GEMINI" : "MOCK ENGINE";
       providerBadge.className = `badge ${provider === "GOOGLE" ? "badge-google" : "badge-mock"}`;
@@ -875,7 +909,7 @@ document.addEventListener("DOMContentLoaded", () => {
     });
 
     try {
-      const res = await fetch("/api/jobs", {
+      const res = await authedFetch("/api/jobs", {
         method: "POST",
         body: formData,
       });
@@ -907,7 +941,7 @@ document.addEventListener("DOMContentLoaded", () => {
     appendLog("EDIT", `Director instruction received: "${text}"`);
 
     try {
-      const res = await fetch(`/api/jobs/${currentJobId}/chat`, {
+      const res = await authedFetch(`/api/jobs/${currentJobId}/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message: text }),
