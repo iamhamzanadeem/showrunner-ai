@@ -8,6 +8,9 @@
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688.svg)](https://fastapi.tiangolo.com/)
 [![Built with Gemini](https://img.shields.io/badge/Google%20GenAI-Gemini%20%C2%B7%20Veo%20%C2%B7%20Lyria-4285F4.svg)](https://cloud.google.com/vertex-ai)
 
+### 🔴 Live demo: **[https://showrunner-ai-jdakbjo4ea-uc.a.run.app](https://showrunner-ai-jdakbjo4ea-uc.a.run.app)**
+Open it, browse the **sample gallery** (a real 30s ad and a real ~2.5 min short film made end-to-end by the agent), or type a brief to start your own tiny production. There's no login. Public jobs are capped to keep costs safe (see [Public demo limits](#public-demo-limits)).
+
 Showrunner AI is an autonomous, agentic AI video production studio. It transforms a single creative brief (and optional reference images) into a fully assembled, broadcast-ready film with continuous camera movement, visual consistency, professional voiceover, ducked soundtrack, burned-in subtitles, and targeted scene-level chat refinement.
 
 ---
@@ -106,8 +109,12 @@ The production process doesn't end with the first cut. Directors can issue natur
 | **Multimodal Video Critic** | `gemini-3.8-flash` | `SR_MODEL_CRITIC` | Google GenAI SDK (`generate_content` multimodal video) |
 | **Visual Bible & Keyframes** | `gemini-3.1-flash-image` | `SR_MODEL_IMAGE` | Google GenAI SDK (`generate_content` image modalities) |
 | **Cinematic Video Generation** | `veo-3.1-fast-generate-001` | `SR_MODEL_VIDEO` | Google GenAI SDK (`generate_videos` image-to-video) |
-| **Spoken Voiceover Synthesis** | `gemini-3.8-flash-tts` | `SR_MODEL_TTS` | Interactions API (`speech_metadata`) |
-| **Soundtrack & Score** | `lyria-3-clip-preview` / `lyria-3-pro-preview` | `SR_MODEL_MUSIC` | DeepMind Lyria Music API |
+| **Spoken Voiceover Synthesis** | `gemini-3.8-flash-tts` | `SR_MODEL_TTS` | `generate_content` audio modality on Vertex (Interactions API on AI Studio) |
+| **Soundtrack & Score (≤30s)** | `lyria-3-clip-preview` | `SR_MODEL_MUSIC` | Interactions API (Vertex, `global`) |
+| **Soundtrack & Score (>30s, up to 180s)** | `lyria-3-pro-preview` | `SR_MODEL_MUSIC_LONG` | Interactions API (Vertex, `global`) |
+| **Keyframe fallback on 429** | `gemini-2.5-flash-image` | `SR_MODEL_IMAGE_FALLBACK` | `generate_content` image modality |
+
+Veo runs in `us-central1` at 720p (`generate_audio=False`; VO and score are generated separately). Gemini, Nano Banana, TTS and Lyria run on the Vertex `global` endpoint.
 
 ---
 
@@ -176,7 +183,7 @@ Showrunner AI is configured via `SHOWRUNNER_PROVIDER`:
 
 1. **Clone the repository**:
    ```bash
-   git clone https://github.com/your-org/showrunner-ai.git
+   git clone https://github.com/iamhamzanadeem/showrunner-ai.git
    cd showrunner-ai
    ```
 
@@ -190,7 +197,9 @@ Showrunner AI is configured via `SHOWRUNNER_PROVIDER`:
 3. **Configure environment**:
    ```bash
    cp .env.example .env
-   # Edit .env to add your GEMINI_API_KEY if testing live Google providers
+   # Mock mode works out of the box. For real models, either set GEMINI_API_KEY,
+   # or use Vertex: GOOGLE_GENAI_USE_VERTEXAI=true, GOOGLE_CLOUD_PROJECT=..., 
+   # SHOWRUNNER_PROVIDER=google (and run `gcloud auth application-default login`)
    ```
 
 4. **Run the local development server**:
@@ -201,7 +210,7 @@ Showrunner AI is configured via `SHOWRUNNER_PROVIDER`:
 
 5. **Run the automated test suite**:
    ```bash
-   pytest -v
+   pytest -v   # always runs in mock mode, no billable calls
    ```
 
 ---
@@ -210,9 +219,20 @@ Showrunner AI is configured via `SHOWRUNNER_PROVIDER`:
 
 Showrunner AI is packaged to run on **Google Cloud Run** with persistent Cloud Storage FUSE mounting:
 
-> [!IMPORTANT]
-> **Cloud Run Architecture Requirement**:  
-> Because jobs run in-process as asyncio background tasks with an in-memory event bus, `--max-instances=1` and `--no-cpu-throttling` are required. State persists to `DATA_DIR` via Cloud Storage FUSE (`/data`), ensuring that `job.json`, keyframes, clips, audio, and master video files survive container restarts.
+```mermaid
+flowchart LR
+    Judge["Browser (public, no login)"] -->|HTTPS + SSE| CR["Cloud Run: showrunner-ai\nmax 2 instances · concurrency 20\nsession affinity · CPU always on"]
+    CR -->|Vertex AI, service account showrunner-sa| Models["Gemini 3.8 Flash · Nano Banana · Veo 3.1 Fast · Gemini TTS · Lyria 3"]
+    CR -->|Cloud Storage FUSE /data| GCS[("gs://showrunner-ai-1017h-showrunner-media\njob.json · clips · final.mp4 · usage.json")]
+    Budget["Billing budget $150\nalerts 50/90/100%"] -.-> CR
+```
+
+- **Runtime**: one FastAPI container serving the UI, REST and SSE. Jobs run in-process as asyncio tasks, so `--no-cpu-throttling` is set.
+- **Storage**: `DATA_DIR=/data` is a GCS FUSE mount, so jobs, media, finished films and usage counters survive restarts and are shared by both instances.
+- **Scaling**: at most 2 instances (`--max-instances=2`, concurrency 20). The event bus is in-memory per instance, so `--session-affinity` keeps a browser on the instance running its job. If a request lands on the other instance, it reads job state from the bucket. A job is only treated as interrupted (and made resumable) once it has had no update for `RECOVERY_STALE_S` (20 min), so a new instance never fails its sibling's live job.
+- **Identity**: dedicated service account `showrunner-sa` with only `roles/aiplatform.user` (project) and `roles/storage.objectAdmin` (media bucket). No API keys.
+- **SSE**: streams replay job history, then send keepalives every 15s. The client dedupes replayed events on reconnect.
+- **Large media**: Cloud Run rejects sized HTTP/1 responses over 32 MiB. Files over 24 MB (a 2.5 min film is ~39 MB) are served in byte ranges of up to 16 MB, which video players request in sequence. Plain downloads are streamed with chunked encoding.
 
 ### Restarts & Failure Handling
 
@@ -221,15 +241,22 @@ Showrunner AI is packaged to run on **Google Cloud Run** with persistent Cloud S
 - The Veo operation id is persisted on each shot (`veo_operation_name`); the Veo launch call is never auto-retried (no duplicate paid jobs). Only 5xx and 429 errors are retried, with jittered backoff.
 - `job.json` is written atomically (temp file + `os.replace`).
 
-### Demo Access Control
+### Public demo limits
 
-The public service is protected by a shared demo token so strangers cannot start paid Veo jobs:
+The live link is intentionally open (no password) so judges can use it. Abuse and cost protection come from caps that are all set with env vars (`scripts/deploy.sh` values shown; `0` = unlimited, the local default):
 
-| Variable | Default | Purpose |
+| Variable | Deployed | Purpose |
 | --- | --- | --- |
-| `DEMO_TOKEN` | unset (no auth, local dev) | Required on `POST /api/jobs` and `POST /api/jobs/{id}/chat` via the `X-Demo-Token` header (or `?token=`). The web UI prompts once and stores it in `localStorage`. `scripts/deploy.sh` generates one if not provided and prints it. |
-| `MAX_JOBS_PER_DAY` | `0` locally, `20` in `deploy.sh` | Cap on new productions + chat refinements per UTC day (`429` when exceeded). |
+| `MAX_JOBS_PER_DAY` | `25` | Global cap on new productions, chat refinements and resumes per UTC day. |
+| `MAX_JOBS_PER_IP_PER_DAY` | `3` | Per-client cap. IPs are stored only as salted SHA-256 hashes in `usage.json`. |
+| `MAX_SHOTS_PER_JOB` | `4` | The planner is told the limit, then the plan is hard-trimmed (the ending is kept). |
+| `MAX_RUNTIME_S` | `30` | Max film runtime for public jobs. |
+| `MAX_RETRIES` | `1` | Critic reshoots per shot. |
+| `MAX_PARALLEL_SCENES` | `2` | Concurrent scene renders per job. |
+| `SAMPLE_JOB_IDS` | ad + short film | Pre-rendered productions shown first in the gallery. They are read-only (no chat or resume). |
 | `CORS_ORIGINS` | `*` | Allowed origins; credentials are never allowed cross-origin. |
+
+When a cap is hit, the API returns `429` with a friendly message (e.g. *"You've used all 3 of your free AI productions for today. Please come back tomorrow (UTC) - the sample films in the gallery are always available."*), and the UI shows it as a banner. Current limits are shown under the brief box (from `/api/health`). Briefs are capped at 4000 characters. A Cloud Billing budget ($150, alerts at 50/90/100%) is set on the project as a backstop.
 
 Uploaded reference images are restricted to PNG/JPG/WEBP (magic-byte checked, max 5 files x 10 MB) and stored under server-generated UUID filenames.
 
@@ -241,8 +268,12 @@ Run the included deployment script:
 export PROJECT_ID="your-gcp-project-id"
 export REGION="us-central1"
 
-# Deploy using Vertex AI Service Account mode (Recommended):
-./scripts/deploy.sh
+# Deploy in Vertex AI mode (recommended). This creates the bucket and the
+# least-privilege service account, uploads the sample jobs, and deploys:
+SAMPLE_JOB_IDS="job_aedcb881dc,job_eb80955254" ./scripts/deploy.sh
+
+# Optionally also create the $150 budget alert:
+BILLING_ACCOUNT="XXXXXX-XXXXXX-XXXXXX" ./scripts/deploy.sh
 
 # Or deploy in DEMO_MOCK mode (zero model cost):
 DEMO_MOCK=1 ./scripts/deploy.sh
@@ -321,7 +352,8 @@ showrunner-ai/
 
 ## 🗺 Limitations & Future Roadmap
 
-- **Multi-Worker Cloud Scaling**: Currently optimized for single-worker execution (`--max-instances=1`) due to in-memory event buses. A future revision will migrate the event bus to Google Cloud Pub/Sub and task orchestration to Cloud Tasks.
+- **Multi-Instance Scaling**: Up to 2 instances work today using session affinity and shared GCS state. Live SSE events stay on the instance running the job. A future revision will move the event bus to Pub/Sub and orchestration to Cloud Tasks.
+- **Provider quirks**: Nano Banana often returns 429 under load (handled with backoff plus a fallback model). Veo sometimes refuses keyframes with realistic faces; the shot is retried text-to-video, and if it is still refused, an animated keyframe still is used and flagged in the UI.
 - **Ultra-HD 4K Upscaling**: Integrating Google Imagen Super-Resolution models to upscale generated 720p/1080p clips to broadcast 4K HDR.
 - **Custom Voice Cloning**: Permitting producers to upload reference voice samples for automated director voiceover matching via Gemini Voice cloning.
 
