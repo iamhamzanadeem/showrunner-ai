@@ -913,6 +913,7 @@ class MockVideoProvider(BaseVideoProvider):
         scene_num: int = 1,
         shot_num: int = 1,
         attempt: int = 1,
+        reference_images: Optional[List[str]] = None,
     ) -> str:
         if settings.MOCK_DELAY_S > 0:
             await asyncio.sleep(min(0.15, settings.MOCK_DELAY_S))
@@ -945,7 +946,7 @@ class MockVideoProvider(BaseVideoProvider):
                 fallback_img.save(fallback_kf, "PNG")
             source_img = fallback_kf
 
-        is_chained = bool(initial_frame and Path(initial_frame).exists())
+        is_chained = bool(initial_frame and Path(initial_frame).exists() and "_lastframe" in Path(initial_frame).name)
         chain_label = " [CHAINED]" if is_chained else ""
         safe_header = f"Scene {scene_num} · Shot {shot_num} · Attempt {attempt}{chain_label}"
         safe_prompt = re.sub(r"[^a-zA-Z0-9 _\-]", "", prompt[:40])

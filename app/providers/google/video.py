@@ -4,12 +4,13 @@ import asyncio
 import logging
 from pathlib import Path
 import time
-from typing import Optional
+from typing import List, Optional
 from google.genai import types
 
 from app.config import settings
 from app.providers.base import BaseVideoProvider
 from app.providers.google.client import call_with_retry, get_genai_client
+from app.providers.google.image import _resolve_image_path
 
 logger = logging.getLogger("showrunner.providers.google.video")
 
@@ -55,6 +56,7 @@ class GoogleVideoProvider(BaseVideoProvider):
         scene_num: int = 1,
         shot_num: int = 1,
         attempt: int = 1,
+        reference_images: Optional[List[str]] = None,
     ) -> str:
         # Veo calls on Vertex AI require us-central1 (or VERTEX_LOCATION_MEDIA)
         client = get_genai_client(
@@ -73,7 +75,7 @@ class GoogleVideoProvider(BaseVideoProvider):
         # Load first frame for image-to-video generation
         image_arg: Optional[types.Image] = None
         if initial_frame:
-            frame_p = Path(initial_frame)
+            frame_p = _resolve_image_path(initial_frame) or Path(initial_frame)
             if not frame_p.is_file():
                 # Try relative to DATA_DIR
                 alt_p = settings.DATA_DIR / initial_frame.lstrip("/")
@@ -86,13 +88,47 @@ class GoogleVideoProvider(BaseVideoProvider):
                 mime = "image/png" if frame_p.suffix.lower() == ".png" else "image/jpeg"
                 image_arg = types.Image(image_bytes=img_bytes, mime_type=mime)
 
+        # Veo 3.1 reference images: ONLY when settings.SR_VEO_USE_REFERENCES is true,
+        # reference_images is non-empty, and there is NO initial image
+        # (Veo does not allow initial image + reference_images together).
+        # Note: Since step (1) makes every shot have an initial keyframe,
+        # reference images effectively only apply if no keyframe / initial image exists.
+        ref_image_configs: list[types.VideoGenerationReferenceImage] = []
+        if settings.SR_VEO_USE_REFERENCES and reference_images and image_arg is None:
+            for ref_str in reference_images:
+                if len(ref_image_configs) >= 3:
+                    break
+                ref_p = _resolve_image_path(ref_str)
+                if not ref_p:
+                    p_candidate = Path(ref_str)
+                    if p_candidate.is_file():
+                        ref_p = p_candidate
+                if ref_p and ref_p.is_file():
+                    with open(ref_p, "rb") as f:
+                        ref_bytes = f.read()
+                    mime = "image/png" if ref_p.suffix.lower() == ".png" else "image/jpeg"
+                    ref_image_configs.append(
+                        types.VideoGenerationReferenceImage(
+                            image=types.Image(image_bytes=ref_bytes, mime_type=mime),
+                            reference_type="asset",
+                        )
+                    )
+
         config_kwargs: dict = {
             "aspect_ratio": self.aspect_ratio,
             "resolution": self.resolution,
             "duration_seconds": snapped_duration,
-            "person_generation": "allow_adult",
             "negative_prompt": "text artifacts, watermarks, bad anatomy, deformed limbs, blurry, low resolution, jitter, flickering",
         }
+
+        # Veo 3.1: text-to-video only accepts "allow_all" (omit person_generation on Vertex AI);
+        # image-to-video and reference-images requests require "allow_adult".
+        if image_arg is not None:
+            config_kwargs["person_generation"] = "allow_adult"
+        elif ref_image_configs:
+            config_kwargs["reference_images"] = ref_image_configs
+            config_kwargs["duration_seconds"] = 8
+            config_kwargs["person_generation"] = "allow_adult"
 
         # Optional GCS output URI if configured
         if settings.SR_GCS_OUTPUT_URI:

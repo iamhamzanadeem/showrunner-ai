@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 import pytest
 
+from app.config import settings
 from app.models import BibleStyle
 from app.providers.google.image import GoogleImageProvider
 from app.providers.google.music import GoogleMusicProvider
@@ -131,6 +132,138 @@ async def test_google_video_duration_snapping_and_download(tmp_path: Path):
         assert call_kwargs["config"].duration_seconds == 8
         assert call_kwargs["config"].aspect_ratio == "16:9"
         assert call_kwargs["config"].resolution == "720p"
+
+
+@pytest.mark.asyncio
+async def test_google_video_person_generation_conditional(tmp_path: Path):
+    mock_op = MagicMock()
+    mock_op.done = True
+    mock_op.error = None
+    mock_vid = MagicMock()
+    mock_vid.video.video_bytes = b"\x00\x00\x00\x18ftypmp42fake_veo_clip"
+    mock_op.response.generated_videos = [mock_vid]
+
+    mock_client = MagicMock()
+    mock_client.models.generate_videos.return_value = mock_op
+
+    with patch("app.providers.google.video.get_genai_client", return_value=mock_client):
+        provider = GoogleVideoProvider(api_key="test-key")
+
+        # 1. Text-only call -> person_generation None, no image kwarg
+        await provider.generate_clip(
+            prompt="Wide shot of a peaceful mountain range at sunrise",
+            duration_s=4.0,
+            initial_frame=None,
+            job_dir=tmp_path,
+            shot_id="shot_text_only",
+        )
+        first_call = mock_client.models.generate_videos.call_args.kwargs
+        assert first_call["config"].person_generation is None
+        assert "image" not in first_call
+
+        mock_client.models.generate_videos.reset_mock()
+
+        # 2. Call with initial_frame -> person_generation "allow_adult", image passed
+        frame_file = tmp_path / "frame.png"
+        frame_file.write_bytes(b"\x89PNG\r\n\x1a\nframe_bytes")
+
+        await provider.generate_clip(
+            prompt="Camera pushes in on mountain peak",
+            duration_s=4.0,
+            initial_frame=str(frame_file),
+            job_dir=tmp_path,
+            shot_id="shot_with_frame",
+        )
+        second_call = mock_client.models.generate_videos.call_args.kwargs
+        assert second_call["config"].person_generation == "allow_adult"
+        assert second_call["image"] is not None
+        assert second_call["image"].image_bytes == b"\x89PNG\r\n\x1a\nframe_bytes"
+
+
+@pytest.mark.asyncio
+async def test_google_video_references_used_when_no_initial_frame(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(settings, "SR_VEO_USE_REFERENCES", True)
+    monkeypatch.setattr(settings, "DATA_DIR", tmp_path)
+
+    # 4 reference files: should be capped at 3
+    ref_files = []
+    for i in range(4):
+        p = tmp_path / f"ref_{i}.png"
+        p.write_bytes(b"\x89PNG\r\n\x1a\n" + f"ref_data_{i}".encode("utf-8"))
+        ref_files.append(str(p))
+
+    mock_op = MagicMock()
+    mock_op.done = True
+    mock_op.error = None
+    mock_vid = MagicMock()
+    mock_vid.video.video_bytes = b"\x00\x00\x00\x18ftypmp42fake_veo_clip"
+    mock_op.response.generated_videos = [mock_vid]
+
+    mock_client = MagicMock()
+    mock_client.models.generate_videos.return_value = mock_op
+
+    with patch("app.providers.google.video.get_genai_client", return_value=mock_client):
+        provider = GoogleVideoProvider(api_key="test-key")
+        # Request duration 4s, but with reference images it must force 8s
+        out_file = await provider.generate_clip(
+            prompt="Character walking in neon city",
+            duration_s=4.0,
+            initial_frame=None,
+            reference_images=ref_files,
+            job_dir=tmp_path,
+        )
+
+        assert Path(out_file).is_file()
+        mock_client.models.generate_videos.assert_called_once()
+        call_kwargs = mock_client.models.generate_videos.call_args.kwargs
+        assert "image" not in call_kwargs
+        config = call_kwargs["config"]
+        assert config.person_generation == "allow_adult"
+        assert config.duration_seconds == 8
+        assert config.reference_images is not None
+        assert len(config.reference_images) == 3
+        assert config.reference_images[0].image.image_bytes == b"\x89PNG\r\n\x1a\nref_data_0"
+
+
+@pytest.mark.asyncio
+async def test_google_video_references_ignored_when_initial_frame_present(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(settings, "SR_VEO_USE_REFERENCES", True)
+    monkeypatch.setattr(settings, "DATA_DIR", tmp_path)
+
+    ref_file = tmp_path / "ref.png"
+    ref_file.write_bytes(b"\x89PNG\r\n\x1a\nref_data")
+    frame_file = tmp_path / "initial.png"
+    frame_file.write_bytes(b"\x89PNG\r\n\x1a\nframe_data")
+
+    mock_op = MagicMock()
+    mock_op.done = True
+    mock_op.error = None
+    mock_vid = MagicMock()
+    mock_vid.video.video_bytes = b"\x00\x00\x00\x18ftypmp42fake_veo_clip"
+    mock_op.response.generated_videos = [mock_vid]
+
+    mock_client = MagicMock()
+    mock_client.models.generate_videos.return_value = mock_op
+
+    with patch("app.providers.google.video.get_genai_client", return_value=mock_client):
+        provider = GoogleVideoProvider(api_key="test-key")
+        out_file = await provider.generate_clip(
+            prompt="Character running",
+            duration_s=4.0,
+            initial_frame=str(frame_file),
+            reference_images=[str(ref_file)],
+            job_dir=tmp_path,
+        )
+
+        assert Path(out_file).is_file()
+        mock_client.models.generate_videos.assert_called_once()
+        call_kwargs = mock_client.models.generate_videos.call_args.kwargs
+        assert call_kwargs["image"] is not None
+        assert call_kwargs["image"].image_bytes == b"\x89PNG\r\n\x1a\nframe_data"
+        config = call_kwargs["config"]
+        assert config.person_generation == "allow_adult"
+        assert config.reference_images is None
+        assert config.duration_seconds == 4
 
 
 @pytest.mark.asyncio

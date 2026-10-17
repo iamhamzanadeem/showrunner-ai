@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 import logging
 from pathlib import Path
 import subprocess
-from typing import Optional
+from typing import List, Optional, Union
 
 from app.config import settings
 from app.events import event_bus
@@ -43,6 +43,42 @@ async def extract_last_frame(clip_path: Path, out_image_path: Path) -> Path:
     )
     await proc.wait()
     return out_image_path
+
+
+def _select_initial_frame(
+    first_frame_path: Optional[Union[Path, str]],
+    kf_path: Optional[Union[Path, str]],
+) -> Optional[str]:
+    """
+    Selects the initial frame for video generation: chained first frame wins,
+    otherwise falls back to the generated shot keyframe.
+    """
+    if first_frame_path and Path(first_frame_path).exists():
+        return str(first_frame_path)
+    if kf_path and Path(kf_path).exists():
+        return str(kf_path)
+    return None
+
+
+def _get_reference_images(job: Job) -> List[str]:
+    """
+    Collects character and product reference image URLs (max 3) from the job or plan.
+    Note: Since every shot normally has an initial keyframe, Veo reference images
+    effectively only apply if no keyframe exists.
+    """
+    refs: List[str] = []
+    if job.character_refs:
+        refs.extend([r for r in job.character_refs.values() if r])
+    if job.product_refs:
+        refs.extend([r for r in job.product_refs.values() if r])
+    if not refs and job.plan and job.plan.bible:
+        for char in job.plan.bible.characters:
+            if char.reference_image:
+                refs.append(char.reference_image)
+        for prod in job.plan.bible.products:
+            if prod.reference_image:
+                refs.append(prod.reference_image)
+    return refs[:3]
 
 
 async def run_pipeline(job: Job) -> None:
@@ -151,6 +187,7 @@ async def run_pipeline(job: Job) -> None:
 
         # STEP 4: SHOT SYNTHESIS & CRITIC LOOP (Limited scene concurrency, sequential within scene)
         semaphore = asyncio.Semaphore(settings.MAX_PARALLEL_SCENES)
+        reference_images = _get_reference_images(job)
 
         async def process_scene(scene) -> None:
             async with semaphore:
@@ -226,12 +263,13 @@ async def run_pipeline(job: Job) -> None:
                         clip_path_str = await providers.video.generate_clip(
                             prompt=shot.visual_prompt,
                             duration_s=shot.duration_s,
-                            initial_frame=str(first_frame_path) if first_frame_path and first_frame_path.exists() else None,
+                            initial_frame=_select_initial_frame(first_frame_path, kf_path),
                             job_dir=job_dir,
                             shot_id=shot.id,
                             scene_num=scene.scene_number,
                             shot_num=s_idx + 1,
                             attempt=attempt,
+                            reference_images=reference_images,
                         )
                         clip_path = Path(clip_path_str)
                         clip_rel_url = f"/media/{job.id}/{clip_path.name}"
@@ -508,6 +546,7 @@ async def run_refinement(job: Job, user_message: str) -> None:
         save_job_state(job)
 
         # 3. Reshoot only affected shots in each scene
+        reference_images = _get_reference_images(job)
         for scene in job.plan.scenes:
             scene_affected = [s for s in scene.shots if s.id in affected_shot_ids]
             if not scene_affected:
@@ -583,12 +622,13 @@ async def run_refinement(job: Job, user_message: str) -> None:
                     clip_path_str = await providers.video.generate_clip(
                         prompt=shot.visual_prompt,
                         duration_s=shot.duration_s,
-                        initial_frame=str(first_frame_path) if first_frame_path and first_frame_path.exists() else None,
+                        initial_frame=_select_initial_frame(first_frame_path, kf_path),
                         job_dir=job_dir,
                         shot_id=shot.id,
                         scene_num=scene.scene_number,
                         shot_num=s_idx + 1,
                         attempt=attempt,
+                        reference_images=reference_images,
                     )
                     clip_path = Path(clip_path_str)
                     clip_rel_url = f"/media/{job.id}/{clip_path.name}"

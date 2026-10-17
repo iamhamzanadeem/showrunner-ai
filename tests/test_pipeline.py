@@ -5,7 +5,8 @@ import pytest
 from app.config import settings
 from app.events import event_bus
 from app.models import Job, JobStatus, VideoMode
-from app.pipeline.orchestrator import run_pipeline
+from app.pipeline.orchestrator import _select_initial_frame, run_pipeline
+from app.providers.mock import MockVideoProvider
 
 
 @pytest.mark.asyncio
@@ -106,3 +107,92 @@ async def test_full_mock_pipeline_ad(tmp_path, monkeypatch):
     for ref_url in list(job.character_refs.values()) + list(job.product_refs.values()):
         ref_filename = Path(ref_url).name
         assert (job_dir / ref_filename).exists()
+
+
+def test_select_initial_frame_helper(tmp_path: Path):
+    """Verifies that chained first frame wins, otherwise falls back to shot keyframe."""
+    chained_frame = tmp_path / "chained_lastframe.png"
+    keyframe = tmp_path / "shot_keyframe.png"
+
+    # Neither exists
+    assert _select_initial_frame(chained_frame, keyframe) is None
+
+    # Only keyframe exists
+    keyframe.write_bytes(b"keyframe_bytes")
+    assert _select_initial_frame(None, keyframe) == str(keyframe)
+    assert _select_initial_frame(chained_frame, keyframe) == str(keyframe)
+
+    # Both exist -> chained first frame wins
+    chained_frame.write_bytes(b"chained_bytes")
+    assert _select_initial_frame(chained_frame, keyframe) == str(chained_frame)
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_initial_frame_and_references(tmp_path: Path, monkeypatch):
+    """
+    Validates that orchestrator passes:
+    - non-chained shot -> initial_frame == keyframe path
+    - chained shot -> initial_frame == chained last frame path
+    - reference_images == list of character/product reference URLs (max 3)
+    """
+    test_data_dir = tmp_path / "data"
+    test_data_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(settings, "DATA_DIR", test_data_dir)
+    monkeypatch.setattr(settings, "MOCK_DELAY_S", 0.0)
+
+    job_id = "test_frame_and_ref_job"
+    job = Job(
+        id=job_id,
+        brief="A 30s cyberpunk advertisement featuring cyber agent and quantum core device.",
+        mode=VideoMode.ad,
+    )
+
+    recorded_calls = []
+    orig_generate_clip = MockVideoProvider.generate_clip
+
+    async def recording_generate_clip(self, **kwargs):
+        recorded_calls.append(kwargs.copy())
+        return await orig_generate_clip(self, **kwargs)
+
+    monkeypatch.setattr(MockVideoProvider, "generate_clip", recording_generate_clip)
+
+    await run_pipeline(job)
+
+    assert len(recorded_calls) > 0
+
+    non_chained_calls = []
+    chained_calls = []
+
+    for call in recorded_calls:
+        init_frame = call.get("initial_frame")
+        assert init_frame is not None, "Every shot must have an initial_frame"
+        if "_lastframe" in init_frame:
+            chained_calls.append(call)
+        elif "_keyframe" in init_frame:
+            non_chained_calls.append(call)
+        else:
+            pytest.fail(f"Unexpected initial_frame format: {init_frame}")
+
+    # Non-chained shots must use shot keyframe path (and the file must exist)
+    assert len(non_chained_calls) >= 1
+    for call in non_chained_calls:
+        init_f = Path(call["initial_frame"])
+        assert init_f.exists()
+        assert "_keyframe.png" in init_f.name
+        assert call["shot_id"] in init_f.name
+
+    # Chained shots must use chained lastframe path (and the file must exist)
+    assert len(chained_calls) >= 1
+    for call in chained_calls:
+        init_f = Path(call["initial_frame"])
+        assert init_f.exists()
+        assert "_lastframe.png" in init_f.name
+
+    # Check reference_images passed to every generate_clip call
+    for call in recorded_calls:
+        assert "reference_images" in call
+        refs = call["reference_images"]
+        assert isinstance(refs, list)
+        assert 1 <= len(refs) <= 3
+        for ref_url in refs:
+            assert ref_url.startswith("/media/")

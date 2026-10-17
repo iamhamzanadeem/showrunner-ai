@@ -75,6 +75,7 @@ class BaseVideoProvider(ABC):
         scene_num: int = 1,
         shot_num: int = 1,
         attempt: int = 1,
+        reference_images: Optional[List[str]] = None,
     ) -> str:
         """Generates a video clip and returns the local file path or URL."""
         pass
