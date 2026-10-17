@@ -16,7 +16,7 @@ logger = logging.getLogger("showrunner.providers.google.music")
 class GoogleMusicProvider(BaseMusicProvider):
     """
     Google Lyria cinematic score and soundtrack generator.
-    Uses official Interactions API with Lyria 3 (<=30s) or Lyria 3.5 (>30s) duration control.
+    Uses the Interactions API with Lyria 3 Clip (<=30s) or Lyria 3 Pro (>30s, up to ~3 min).
     """
 
     def __init__(
@@ -41,9 +41,11 @@ class GoogleMusicProvider(BaseMusicProvider):
 
         # Select model and prompt based on duration
         if duration_s > 30.0:
-            target_model = "lyria-3.5"
+            # Lyria 3 Pro: full compositions up to 184s ("lyria-3.5" does not exist on Vertex).
+            target_model = settings.SR_MODEL_MUSIC_LONG
+            target_s = int(min(duration_s, 180))
             music_prompt = (
-                f"A {int(duration_s)}-second cinematic orchestral and ambient score. "
+                f"A {target_s}-second cinematic orchestral and ambient score. "
                 f"Mood: {prompt}. Full production mix, dynamic crescendo, instrumental only, no vocals."
             )
         else:

@@ -39,6 +39,8 @@ class Settings(BaseSettings):
     SR_MODEL_TTS: str = "gemini-3.8-flash-tts"
     SR_TTS_VOICE: str = "Kore"
     SR_MODEL_MUSIC: str = "lyria-3-clip-preview"
+    # Tracks longer than 30s (short films): Lyria 3 Pro, max ~184s
+    SR_MODEL_MUSIC_LONG: str = "lyria-3-pro-preview"
     SR_VIDEO_RESOLUTION: str = "720p"
     SR_ASPECT: str = "16:9"
     SR_VEO_TIMEOUT_S: int = 600

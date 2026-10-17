@@ -85,7 +85,7 @@ sequenceDiagram
 
 ### 6. Sound Design & Master FFmpeg Assembly
 - **Voiceover**: Gemini TTS (`gemini-3.8-flash-tts`) synthesizes naturalistic spoken voiceover paced to shot durations.
-- **Score**: DeepMind Lyria (`lyria-3-clip-preview` / `lyria-3.5`) synthesizes atmospheric background music.
+- **Score**: DeepMind Lyria (`lyria-3-clip-preview` / `lyria-3-pro-preview`) synthesizes atmospheric background music.
 - **FFmpeg Engine**: Concat demuxer joins clips with transition buffers, burns high-contrast subtitles, and dynamically ducks background music during active voiceover lines.
 
 ### 7. Director Chat Refinement
@@ -107,7 +107,7 @@ The production process doesn't end with the first cut. Directors can issue natur
 | **Visual Bible & Keyframes** | `gemini-3.1-flash-image` | `SR_MODEL_IMAGE` | Google GenAI SDK (`generate_content` image modalities) |
 | **Cinematic Video Generation** | `veo-3.1-fast-generate-001` | `SR_MODEL_VIDEO` | Google GenAI SDK (`generate_videos` image-to-video) |
 | **Spoken Voiceover Synthesis** | `gemini-3.8-flash-tts` | `SR_MODEL_TTS` | Interactions API (`speech_metadata`) |
-| **Soundtrack & Score** | `lyria-3-clip-preview` / `lyria-3.5` | `SR_MODEL_MUSIC` | DeepMind Lyria Music API |
+| **Soundtrack & Score** | `lyria-3-clip-preview` / `lyria-3-pro-preview` | `SR_MODEL_MUSIC` | DeepMind Lyria Music API |
 
 ---
 

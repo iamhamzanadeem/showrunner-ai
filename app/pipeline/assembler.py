@@ -240,8 +240,9 @@ async def assemble_video(job: Job, job_dir: Path, version: int = 1) -> Tuple[str
     audio_mix_inputs = []
 
     if music_file and music_file.exists():
-        input_args.extend(["-i", str(music_file)])
-        bgm_idx = len(input_args) // 2 - 1
+        # Loop the score if it is shorter than the cut (output is trimmed with -t).
+        input_args.extend(["-stream_loop", "-1", "-i", str(music_file)])
+        bgm_idx = input_args.count("-i") - 1
         fade_st = max(0.0, total_duration - 1.5)
         filter_complex_parts.append(
             f"[{bgm_idx}:a]volume=0.25,afade=t=out:st={fade_st:.2f}:d=1.5[bgm]"
@@ -250,7 +251,7 @@ async def assemble_video(job: Job, job_dir: Path, version: int = 1) -> Tuple[str
 
     for idx, (shot_id, _start, _dur, vo_path) in enumerate(vo_items):
         input_args.extend(["-i", str(vo_path)])
-        stream_idx = len(input_args) // 2 - 1
+        stream_idx = input_args.count("-i") - 1
         timing = vo_timings[shot_id]
         offset_ms = int(timing["start"] * 1000)
         tempo = timing["tempo"]

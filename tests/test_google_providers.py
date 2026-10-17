@@ -281,7 +281,7 @@ async def test_tts_interactions_api_with_voice(tmp_path: Path):
 # -----------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_music_picks_correct_lyria_model(tmp_path: Path):
-    """Verifies music picks lyria-3-clip-preview for <=30s and lyria-3.5 for longer."""
+    """Verifies music picks lyria-3-clip-preview for <=30s and lyria-3-pro-preview for longer."""
     mock_client = MagicMock()
     mock_it = MagicMock()
     mock_audio = MagicMock()
@@ -313,5 +313,5 @@ async def test_music_picks_correct_lyria_model(tmp_path: Path):
         )
         assert Path(res_long).is_file()
         kwargs2 = mock_client.interactions.create.call_args.kwargs
-        assert kwargs2["model"] == "lyria-3.5"
+        assert kwargs2["model"] == "lyria-3-pro-preview"
         assert "90-second" in kwargs2["input"]

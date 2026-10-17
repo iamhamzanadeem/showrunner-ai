@@ -350,7 +350,7 @@ async def test_google_music_duration_model_selection(tmp_path: Path):
         first_call_kwargs = mock_client.interactions.create.call_args.kwargs
         assert first_call_kwargs["model"] == "lyria-3-clip-preview"
 
-        # 2. Long track (> 30s) -> uses lyria-3.5 with duration in prompt
+        # 2. Long track (> 30s) -> uses lyria-3-pro-preview with duration in prompt
         long_file = await provider.generate_music(
             prompt="Cinematic orchestral adventure",
             duration_s=120.0,
@@ -358,5 +358,5 @@ async def test_google_music_duration_model_selection(tmp_path: Path):
         )
         assert Path(long_file).is_file()
         second_call_kwargs = mock_client.interactions.create.call_args.kwargs
-        assert second_call_kwargs["model"] == "lyria-3.5"
+        assert second_call_kwargs["model"] == "lyria-3-pro-preview"
         assert "120-second" in second_call_kwargs["input"]
