@@ -135,3 +135,32 @@ def test_multi_instance_recovery_only_touches_stale_jobs(monkeypatch):
     assert recover_interrupted_jobs() == 1
     assert load_job("job_freshrun1").status == JobStatus.generating
     assert load_job("job_staleru1").status == JobStatus.failed
+
+
+def test_large_media_served_in_capped_ranges(client, monkeypatch):
+    """Cloud Run caps sized HTTP/1 responses at 32 MiB; big films must be range/stream served."""
+    import app.main as main_mod
+
+    monkeypatch.setattr(main_mod, "MEDIA_DIRECT_LIMIT_BYTES", 1000)
+    monkeypatch.setattr(main_mod, "MEDIA_MAX_RANGE_BYTES", 300)
+    job_dir = settings.DATA_DIR / "jobs" / "job_big"
+    job_dir.mkdir(parents=True, exist_ok=True)
+    payload = bytes(range(256)) * 10  # 2560 bytes
+    (job_dir / "final.mp4").write_bytes(payload)
+
+    r = client.get("/media/job_big/final.mp4", headers={"Range": "bytes=0-"})
+    assert r.status_code == 206
+    assert r.headers["content-range"] == "bytes 0-299/2560"
+    assert r.content == payload[:300]
+
+    r = client.get("/media/job_big/final.mp4", headers={"Range": "bytes=2500-"})
+    assert r.status_code == 206 and r.content == payload[2500:]
+
+    r = client.get("/media/job_big/final.mp4", headers={"Range": "bytes=9999-"})
+    assert r.status_code == 416
+
+    r = client.get("/media/job_big/final.mp4")
+    assert r.status_code == 200 and r.content == payload
+    assert "content-length" not in r.headers or r.headers.get("transfer-encoding") == "chunked"
+
+    assert client.get("/media/../secrets.txt").status_code == 404

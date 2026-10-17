@@ -17,7 +17,7 @@ from fastapi import (
     status,
 )
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from app import __version__
@@ -471,8 +471,50 @@ async def get_job_events(job_id: str) -> StreamingResponse:
     )
 
 
-@app.get("/media/{file_path:path}")
-async def get_media_file(file_path: str) -> FileResponse:
+# Cloud Run rejects HTTP/1 responses with a Content-Length above 32 MiB, so large
+# media (a 2-3 min film is ~40 MB) is served in capped byte ranges (video players
+# simply request the next range) and full downloads are streamed chunked.
+MEDIA_MAX_RANGE_BYTES = 16 * 1024 * 1024
+MEDIA_DIRECT_LIMIT_BYTES = 24 * 1024 * 1024
+_MEDIA_CHUNK = 1024 * 1024
+
+
+def _iter_file(path: Path, start: int, length: int):
+    with open(path, "rb") as fh:
+        fh.seek(start)
+        remaining = length
+        while remaining > 0:
+            data = fh.read(min(_MEDIA_CHUNK, remaining))
+            if not data:
+                break
+            remaining -= len(data)
+            yield data
+
+
+def _parse_range(header: str, size: int) -> Optional[tuple[int, int]]:
+    try:
+        unit, _, spec = header.partition("=")
+        if unit.strip().lower() != "bytes" or "," in spec:
+            return None
+        start_s, _, end_s = spec.strip().partition("-")
+        if start_s == "":
+            suffix = int(end_s)
+            if suffix <= 0:
+                return None
+            start, end = max(size - suffix, 0), size - 1
+        else:
+            start = int(start_s)
+            end = int(end_s) if end_s else size - 1
+        end = min(end, size - 1)
+        if start > end or start >= size:
+            return None
+        return start, end
+    except ValueError:
+        return None
+
+
+@app.api_route("/media/{file_path:path}", methods=["GET", "HEAD"])
+async def get_media_file(file_path: str, request: Request):
     """Serves generated job media assets from active DATA_DIR."""
     jobs_root = (settings.DATA_DIR / "jobs").resolve()
     target_path = (jobs_root / file_path).resolve()
@@ -481,7 +523,36 @@ async def get_media_file(file_path: str) -> FileResponse:
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Media asset not found.",
         )
-    return FileResponse(target_path)
+    size = target_path.stat().st_size
+    if size <= MEDIA_DIRECT_LIMIT_BYTES:
+        return FileResponse(target_path)
+
+    import mimetypes
+
+    media_type = mimetypes.guess_type(target_path.name)[0] or "application/octet-stream"
+    range_header = request.headers.get("range")
+    if range_header:
+        parsed = _parse_range(range_header, size)
+        if parsed is None:
+            return Response(status_code=416, headers={"Content-Range": f"bytes */{size}"})
+        start, end = parsed
+        end = min(end, start + MEDIA_MAX_RANGE_BYTES - 1)
+        length = end - start + 1
+        headers = {
+            "Content-Range": f"bytes {start}-{end}/{size}",
+            "Accept-Ranges": "bytes",
+            "Content-Length": str(length),
+        }
+        if request.method == "HEAD":
+            return Response(status_code=206, headers=headers, media_type=media_type)
+        return StreamingResponse(
+            _iter_file(target_path, start, length), status_code=206, headers=headers, media_type=media_type
+        )
+    headers = {"Accept-Ranges": "bytes"}
+    if request.method == "HEAD":
+        return Response(status_code=200, headers=headers, media_type=media_type)
+    # No Content-Length: chunked transfer encoding is not subject to the 32 MiB cap.
+    return StreamingResponse(_iter_file(target_path, 0, size), headers=headers, media_type=media_type)
 
 # Serve static frontend assets
 static_dir = Path("./static")
