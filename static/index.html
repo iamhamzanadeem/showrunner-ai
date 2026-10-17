@@ -52,6 +52,20 @@
       </div>
     </header>
 
+    <!-- Friendly notices (daily caps, read-only samples) -->
+    <div id="notice-banner" class="notice-banner hidden" role="status">
+      <span id="notice-text"></span>
+      <button type="button" id="notice-close" class="notice-close" aria-label="Dismiss">✕</button>
+    </div>
+
+    <!-- Sample gallery: finished real productions viewable without spending -->
+    <section id="sample-gallery" class="sample-gallery hidden">
+      <div class="gallery-head">
+        <span class="section-label">🎬 SAMPLE PRODUCTIONS · made end-to-end by Showrunner AI with Gemini, Nano Banana, Veo 3.1, Gemini TTS &amp; Lyria</span>
+      </div>
+      <div id="gallery-cards" class="gallery-cards"></div>
+    </section>
+
     <!-- Main 3-column workspace -->
     <main class="workspace-grid">
       
@@ -129,6 +143,7 @@
           </div>
 
           <!-- Submit Button -->
+          <div id="limits-note" class="limits-note hidden"></div>
           <div class="action-footer">
             <button type="submit" id="submit-btn" class="btn btn-primary">
               <span class="btn-spinner hidden" id="btn-spinner"></span>

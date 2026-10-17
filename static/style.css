@@ -1619,3 +1619,69 @@ textarea:focus {
   letter-spacing: 0.05em;
 }
 
+
+
+/* ---- Public demo: notices, limits, sample gallery ---- */
+.notice-banner {
+  margin: 10px 20px 0;
+  padding: 10px 14px;
+  border: 1px solid var(--accent-amber);
+  background: rgba(245, 158, 11, 0.12);
+  color: var(--text-main);
+  border-radius: var(--radius-md);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 0.9rem;
+}
+.notice-close {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 1rem;
+}
+.limits-note {
+  font-size: 0.75rem;
+  color: var(--text-faint);
+  margin: 4px 0 8px;
+  line-height: 1.4;
+}
+.sample-gallery {
+  margin: 10px 20px 0;
+  padding: 12px 14px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+.gallery-head { margin-bottom: 8px; }
+.gallery-cards {
+  display: flex;
+  gap: 12px;
+  overflow-x: auto;
+}
+.gallery-card {
+  flex: 0 0 240px;
+  background: var(--bg-surface-elevated);
+  border: 1px solid var(--border-prominent);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  cursor: pointer;
+  text-align: left;
+  color: var(--text-main);
+  padding: 0;
+  transition: border-color 0.15s ease, transform 0.15s ease;
+}
+.gallery-card:hover { border-color: var(--accent-cyan); transform: translateY(-2px); }
+.gallery-card img {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  display: block;
+  background: #090b10;
+}
+.gallery-card .gallery-meta { padding: 8px 10px; }
+.gallery-card .gallery-title { font-weight: 600; font-size: 0.85rem; }
+.gallery-card .gallery-sub { font-size: 0.72rem; color: var(--text-muted); margin-top: 2px; }
+.hidden.notice-banner, .hidden.sample-gallery, .hidden.limits-note { display: none; }

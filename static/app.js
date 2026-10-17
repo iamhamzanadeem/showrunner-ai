@@ -65,6 +65,7 @@ document.addEventListener("DOMContentLoaded", () => {
   // 0. Demo access token (only when the server reports auth_required)
   const TOKEN_KEY = "showrunner_demo_token";
   let authRequired = false;
+  let sampleJobIds = new Set();
 
   function getDemoToken(forcePrompt = false) {
     let token = localStorage.getItem(TOKEN_KEY) || "";
@@ -100,6 +101,8 @@ document.addEventListener("DOMContentLoaded", () => {
       const res = await fetch("/api/health");
       const data = await res.json();
       authRequired = Boolean(data.auth_required);
+      sampleJobIds = new Set(data.sample_job_ids || []);
+      renderLimitsNote(data.limits || {});
       if (authRequired) getDemoToken();
       const provider = (data.active_provider || "mock").toUpperCase();
       providerName.textContent = provider === "GOOGLE" ? "GOOGLE VEO / GEMINI" : "MOCK ENGINE";
@@ -110,7 +113,72 @@ document.addEventListener("DOMContentLoaded", () => {
       providerBadge.className = "badge badge-mock";
     }
   }
-  checkHealth();
+  const healthReady = checkHealth();
+
+  // Public demo helpers: friendly notices, limits note, read-only samples
+  const noticeBanner = document.getElementById("notice-banner");
+  const noticeText = document.getElementById("notice-text");
+  const noticeClose = document.getElementById("notice-close");
+  if (noticeClose) noticeClose.addEventListener("click", () => noticeBanner.classList.add("hidden"));
+
+  function showNotice(message) {
+    if (!noticeBanner) return;
+    noticeText.textContent = message;
+    noticeBanner.classList.remove("hidden");
+    noticeBanner.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  // Turns an error response into a friendly message (429 = demo caps, 403 = sample)
+  async function friendlyError(res, fallback) {
+    const data = await res.json().catch(() => ({}));
+    const msg = data.detail || `${fallback} (${res.status})`;
+    if (res.status === 429 || res.status === 403) showNotice(msg);
+    return msg;
+  }
+
+  function renderLimitsNote(limits) {
+    const el = document.getElementById("limits-note");
+    if (!el) return;
+    const parts = [];
+    if (limits.max_shots_per_job) parts.push(`up to ${limits.max_shots_per_job} shots`);
+    if (limits.max_runtime_s) parts.push(`~${Math.round(limits.max_runtime_s)}s per production`);
+    if (limits.max_jobs_per_ip_per_day) parts.push(`${limits.max_jobs_per_ip_per_day} productions per visitor per day`);
+    if (!parts.length) return;
+    el.textContent = `Public demo limits: ${parts.join(" · ")}. Each run uses real Gemini, Veo & Lyria models (takes a few minutes).`;
+    el.classList.remove("hidden");
+  }
+
+  function isSampleJob(jobId) {
+    return sampleJobIds.has(jobId);
+  }
+
+  function renderGallery(jobs) {
+    const gallery = document.getElementById("sample-gallery");
+    const cards = document.getElementById("gallery-cards");
+    if (!gallery || !cards) return;
+    const samples = jobs.filter((j) => j.is_sample && j.final_video_url);
+    if (!samples.length) {
+      gallery.classList.add("hidden");
+      return;
+    }
+    cards.innerHTML = "";
+    samples.forEach((job) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "gallery-card";
+      const title = escapeHtml(job.title || job.id);
+      const kind = job.mode === "short_film" ? "Short film" : "Commercial";
+      btn.innerHTML = `
+        <img src="${job.poster_url || ""}" alt="${title}" loading="lazy" onerror="this.style.visibility='hidden'">
+        <div class="gallery-meta">
+          <div class="gallery-title">▶ ${title}</div>
+          <div class="gallery-sub">${kind} · real AI production · read-only</div>
+        </div>`;
+      btn.addEventListener("click", () => loadJob(job.id));
+      cards.appendChild(btn);
+    });
+    gallery.classList.remove("hidden");
+  }
 
   // 2. Mode Toggle Handling
   modeButtons.forEach((btn) => {
@@ -588,12 +656,13 @@ document.addEventListener("DOMContentLoaded", () => {
       const res = await fetch("/api/jobs");
       if (!res.ok) return;
       const jobs = await res.json();
+      renderGallery(jobs);
       recentJobsSelect.innerHTML = '<option value="">📁 Recent Productions</option>';
       jobs.forEach((job) => {
         const opt = document.createElement("option");
         opt.value = job.id;
         const title = job.title || (job.brief ? job.brief.substring(0, 28) : job.id);
-        opt.textContent = `${title} (${job.mode || "ad"})`;
+        opt.textContent = `${job.is_sample ? "★ " : ""}${title} (${job.mode || "ad"})`;
         if (job.id === currentJobId) {
           opt.selected = true;
         }
@@ -613,6 +682,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   async function loadJob(jobId) {
     if (!jobId) return;
+    await healthReady; // sample (read-only) ids come from /api/health
     try {
       const res = await fetch(`/api/jobs/${jobId}`);
       if (!res.ok) return;
@@ -641,7 +711,12 @@ document.addEventListener("DOMContentLoaded", () => {
         if (job.final_video_url) {
           displayMasterVideo(job.final_video_url, job.poster_url);
         }
-        chatRefinementCard.classList.remove("hidden");
+        if (isSampleJob(job.id)) {
+          chatRefinementCard.classList.add("hidden");
+          appendLog("INFO", "Sample production (read-only). Write your own brief on the left to direct a new one.");
+        } else {
+          chatRefinementCard.classList.remove("hidden");
+        }
         updateProgress(100, "Production complete");
         resetSubmitBtn();
       } else if (job.status === "failed") {
@@ -680,8 +755,7 @@ document.addEventListener("DOMContentLoaded", () => {
       try {
         const res = await authedFetch(`/api/jobs/${currentJobId}/resume`, { method: "POST" });
         if (!res.ok) {
-          const err = await res.json().catch(() => ({}));
-          throw new Error(err.detail || `Resume failed (${res.status})`);
+          throw new Error(await friendlyError(res, "Resume failed"));
         }
         hideResumeButton();
         appendLog("INFO", "Resuming production from completed shots...");
@@ -959,8 +1033,7 @@ document.addEventListener("DOMContentLoaded", () => {
       });
 
       if (!res.ok) {
-        const errData = await res.json().catch(() => ({}));
-        throw new Error(errData.detail || `Server error (${res.status})`);
+        throw new Error(await friendlyError(res, "Server error"));
       }
 
       const jobData = await res.json();
@@ -998,8 +1071,7 @@ document.addEventListener("DOMContentLoaded", () => {
       }
 
       if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.detail || `Chat failed (${res.status})`);
+        throw new Error(await friendlyError(res, "Chat failed"));
       }
 
       // Reconnect SSE if closed
