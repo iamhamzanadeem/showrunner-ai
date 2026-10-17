@@ -62,9 +62,9 @@ async def test_full_pipeline_then_restart_recovery_and_resume(monkeypatch):
     assert job.status == JobStatus.failed
     passed_before = {s.id: s.video_url for sc in job.plan.scenes for s in sc.shots if s.status == ShotStatus.passed}
     assert passed_before
-    # Veo op name persisted on shots that rendered
+    # Veo op name is cleared once the clip is on disk (it must never be re-attached later)
     assert all(
-        s.veo_operation_name for sc in job.plan.scenes for s in sc.shots if s.status == ShotStatus.passed
+        s.veo_operation_name is None for sc in job.plan.scenes for s in sc.shots if s.status == ShotStatus.passed
     )
 
     # 2. Resume: only previously failed shots are rendered again

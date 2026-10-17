@@ -203,72 +203,115 @@ async def _produce_shot(
     last_error: Optional[BaseException] = None
 
     def _record_operation(op_name: str) -> None:
-        # Persist the Veo long-running operation id so an interrupted job can be inspected/recovered.
+        # Persist the Veo long-running operation id atomically (save_job_state writes via
+        # temp file + os.replace) right after submission and before polling, so a restarted
+        # server can re-attach to it instead of paying for a second render.
         shot.veo_operation_name = op_name
+        shot.veo_operation_attempt = attempt
         save_job_state(job)
 
-    while attempt <= max_attempts:
+    # Resume: a Veo operation submitted before a restart may still be running or already done.
+    # (Not for chat refinements: a new edit must never be satisfied by a stale render.)
+    resumed_clip: Optional[str] = None
+    if shot.veo_operation_name and not is_refinement:
+        saved_op = shot.veo_operation_name
+        resume_attempt = shot.veo_operation_attempt or attempt
         await event_bus.publish(
             job_id=job.id,
-            step="KEYFRAME",
-            message=f"{verb}{'g' if verb else 'G'}enerating visual keyframe for {shot.id} (Attempt #{attempt})...",
+            step="GEN",
+            message=f"Re-attaching to saved Veo operation for {shot.id} (Attempt #{resume_attempt}) instead of re-rendering...",
             shot_id=shot.id,
             scene_id=scene.id,
-            data={"attempt": attempt, "prompt": shot.visual_prompt},
+            data={"attempt": resume_attempt, "duration_s": shot.duration_s, "image_url": shot.image_url, "resumed": True},
         )
-
         try:
-            kf_path = await providers.image.generate_keyframe(
-                prompt=shot.visual_prompt,
-                style=plan.bible.style,
-                ref_image=shot.first_frame_url if first_frame_path else None,
-                ref_images=_shot_reference_sheets(job, shot, limit=2 if first_frame_path else 3),
-                job_dir=job_dir,
-                shot_id=shot.id,
-                scene_num=scene.scene_number,
-                shot_num=s_idx + 1,
-                attempt=attempt,
-            )
-            keyframe_rel_url = f"/media/{job.id}/{Path(kf_path).name}"
-            shot.image_url = keyframe_rel_url
-
-            await event_bus.publish(
-                job_id=job.id,
-                step="GEN",
-                message=f"{verb}{'r' if verb else 'R'}endering clip for {shot.id} ({shot.duration_s:.1f}s, Attempt #{attempt})...",
-                shot_id=shot.id,
-                scene_id=scene.id,
-                data={"attempt": attempt, "duration_s": shot.duration_s, "image_url": keyframe_rel_url},
-            )
-
-            clip_path_str = await providers.video.generate_clip(
-                prompt=shot.visual_prompt,
-                duration_s=shot.duration_s,
-                initial_frame=_select_initial_frame(first_frame_path, kf_path),
-                job_dir=job_dir,
-                shot_id=shot.id,
-                scene_num=scene.scene_number,
-                shot_num=s_idx + 1,
-                attempt=attempt,
-                reference_images=_shot_reference_sheets(job, shot, limit=3),
-                on_operation_started=_record_operation,
+            resumed_clip = await providers.video.resume_clip(
+                saved_op, job_dir=job_dir, shot_id=shot.id, attempt=resume_attempt
             )
         except asyncio.CancelledError:
             raise
-        except Exception as exc:  # provider failure for this attempt
-            last_error = exc
-            logger.warning("Attempt %d for %s failed: %s", attempt, shot.id, exc)
+        except Exception as exc:
+            logger.warning("Resuming Veo operation %s for %s failed: %s", saved_op, shot.id, exc)
+            resumed_clip = None
+        if resumed_clip:
+            attempt = max(attempt, resume_attempt)
+            logger.info("Reused saved Veo operation %s for %s", saved_op, shot.id)
+        else:
+            logger.info("Saved Veo operation %s for %s not reusable; generating anew", saved_op, shot.id)
+        shot.veo_operation_name = None
+        shot.veo_operation_attempt = None
+        save_job_state(job)
+
+    while attempt <= max_attempts:
+        if resumed_clip:
+            clip_path_str = resumed_clip
+            resumed_clip = None
+            keyframe_rel_url = shot.image_url
+        else:
             await event_bus.publish(
                 job_id=job.id,
-                step="RETRY",  # never "ERROR": that is terminal for SSE subscribers
-                message=f"Generation attempt #{attempt} for {shot.id} failed: {exc}",
+                step="KEYFRAME",
+                message=f"{verb}{'g' if verb else 'G'}enerating visual keyframe for {shot.id} (Attempt #{attempt})...",
                 shot_id=shot.id,
                 scene_id=scene.id,
-                data={"shot_id": shot.id, "attempt": attempt, "error": str(exc)},
+                data={"attempt": attempt, "prompt": shot.visual_prompt},
             )
-            attempt += 1
-            continue
 
+            try:
+                kf_path = await providers.image.generate_keyframe(
+                    prompt=shot.visual_prompt,
+                    style=plan.bible.style,
+                    ref_image=shot.first_frame_url if first_frame_path else None,
+                    ref_images=_shot_reference_sheets(job, shot, limit=2 if first_frame_path else 3),
+                    job_dir=job_dir,
+                    shot_id=shot.id,
+                    scene_num=scene.scene_number,
+                    shot_num=s_idx + 1,
+                    attempt=attempt,
+                )
+                keyframe_rel_url = f"/media/{job.id}/{Path(kf_path).name}"
+                shot.image_url = keyframe_rel_url
+
+                await event_bus.publish(
+                    job_id=job.id,
+                    step="GEN",
+                    message=f"{verb}{'r' if verb else 'R'}endering clip for {shot.id} ({shot.duration_s:.1f}s, Attempt #{attempt})...",
+                    shot_id=shot.id,
+                    scene_id=scene.id,
+                    data={"attempt": attempt, "duration_s": shot.duration_s, "image_url": keyframe_rel_url},
+                )
+
+                clip_path_str = await providers.video.generate_clip(
+                    prompt=shot.visual_prompt,
+                    duration_s=shot.duration_s,
+                    initial_frame=_select_initial_frame(first_frame_path, kf_path),
+                    job_dir=job_dir,
+                    shot_id=shot.id,
+                    scene_num=scene.scene_number,
+                    shot_num=s_idx + 1,
+                    attempt=attempt,
+                    reference_images=_shot_reference_sheets(job, shot, limit=3),
+                    on_operation_started=_record_operation,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # provider failure for this attempt
+                last_error = exc
+                logger.warning("Attempt %d for %s failed: %s", attempt, shot.id, exc)
+                await event_bus.publish(
+                    job_id=job.id,
+                    step="RETRY",  # never "ERROR": that is terminal for SSE subscribers
+                    message=f"Generation attempt #{attempt} for {shot.id} failed: {exc}",
+                    shot_id=shot.id,
+                    scene_id=scene.id,
+                    data={"shot_id": shot.id, "attempt": attempt, "error": str(exc)},
+                )
+                attempt += 1
+                continue
+
+        # Clip is on disk: the saved operation must never be re-attached to later.
+        shot.veo_operation_name = None
+        shot.veo_operation_attempt = None
         clip_path = Path(clip_path_str)
         clip_rel_url = f"/media/{job.id}/{clip_path.name}"
         shot.video_url = str(clip_path)

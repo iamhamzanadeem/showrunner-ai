@@ -170,7 +170,10 @@ class GoogleVideoProvider(BaseVideoProvider):
                 except Exception as e:
                     logger.warning("on_operation_started callback failed: %s", e)
 
-        # Poll operation asynchronously until completion or timeout
+        return await self._finish_operation(client, op, out_path, shot_id)
+
+    async def _finish_operation(self, client: Any, op: Any, out_path: Path, shot_id: Optional[str]) -> str:
+        """Polls a Veo operation until done, then downloads its first video to out_path."""
         start_time = time.time()
         poll_interval = 5.0  # seconds between poll checks
 
@@ -202,6 +205,44 @@ class GoogleVideoProvider(BaseVideoProvider):
             raise RuntimeError(f"Failed to download or persist Veo video clip to {out_path}.")
 
         return str(out_path)
+
+    async def resume_clip(
+        self,
+        operation_name: str,
+        job_dir: Optional[Path] = None,
+        shot_id: Optional[str] = None,
+        attempt: int = 1,
+    ) -> Optional[str]:
+        """Re-attaches to a previously submitted Veo operation (e.g. after a server restart).
+
+        Done -> downloads and returns the clip; still running -> keeps polling it.
+        Returns None (caller should submit a new generation) when the operation is
+        missing/expired, failed, or produced no video. Never submits a new generation.
+        """
+        if not operation_name or operation_name.startswith("mock-op-"):
+            return None
+        client = get_genai_client(
+            api_key=self.api_key,
+            project=self.project,
+            location=settings.VERTEX_LOCATION_MEDIA or "us-central1",
+        )
+        out_dir = job_dir or settings.DATA_DIR
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_path = out_dir / f"{shot_id or 'shot'}_att{attempt}.mp4"
+        try:
+            op = await call_with_retry(
+                client.operations.get, types.GenerateVideosOperation(name=operation_name)
+            )
+        except Exception as exc:  # 404 / expired / malformed name
+            logger.warning("Saved Veo operation %s for %s is not retrievable: %s", operation_name, shot_id, exc)
+            return None
+        try:
+            return await self._finish_operation(client, op, out_path, shot_id)
+        except TimeoutError:
+            raise
+        except Exception as exc:
+            logger.warning("Saved Veo operation %s for %s unusable: %s", operation_name, shot_id, exc)
+            return None
 
     async def _save_video_file(self, client: Any, video_obj: Any, out_path: Path) -> bool:
         """Saves generated video object from bytes, GCS URI, or client download."""

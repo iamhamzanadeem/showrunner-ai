@@ -90,6 +90,21 @@ class BaseVideoProvider(ABC):
         """Generates a video clip and returns the local file path or URL."""
         pass
 
+    async def resume_clip(
+        self,
+        operation_name: str,
+        job_dir: Optional[Path] = None,
+        shot_id: Optional[str] = None,
+        attempt: int = 1,
+    ) -> Optional[str]:
+        """Re-attaches to a previously submitted generation operation.
+
+        Returns the clip path if the operation finished (or finishes while polling), or None
+        when it cannot be reused (missing, expired, failed) and a new generation is needed.
+        Default: providers without long-running operations cannot resume.
+        """
+        return None
+
 
 class BaseCriticProvider(ABC):
     """Abstract interface for multimodal critique and review (Gemini Multimodal)."""

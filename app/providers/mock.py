@@ -905,6 +905,19 @@ class MockImageProvider(BaseImageProvider):
 class MockVideoProvider(BaseVideoProvider):
     """Generates mock video clips animating keyframe images via FFmpeg with continuity chaining."""
 
+    async def resume_clip(
+        self,
+        operation_name: str,
+        job_dir: Optional[Path] = None,
+        shot_id: Optional[str] = None,
+        attempt: int = 1,
+    ) -> Optional[str]:
+        """Mock 'operation' is complete iff its clip file was already written."""
+        if not operation_name or not job_dir:
+            return None
+        clip = job_dir / f"{shot_id or 'shot'}_att{attempt}.mp4"
+        return str(clip) if clip.is_file() and clip.stat().st_size > 0 else None
+
     async def generate_clip(
         self,
         prompt: str,

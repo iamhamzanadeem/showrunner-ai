@@ -104,6 +104,8 @@ class Shot(BaseModel):
     attempts: List[ShotAttempt] = Field(default_factory=list)
     prompt_history: List[str] = Field(default_factory=list)
     veo_operation_name: Optional[str] = None
+    # Attempt number the saved operation belongs to (for resume after a restart)
+    veo_operation_attempt: Optional[int] = None
 
 
 class Scene(BaseModel):
