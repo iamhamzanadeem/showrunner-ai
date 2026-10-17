@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import hashlib
 import hmac
 import json
 import os
@@ -50,12 +51,38 @@ def _usage_file() -> Path:
     return settings.DATA_DIR / "usage.json"
 
 
-def consume_daily_quota() -> None:
-    """Increments today's (UTC) job counter; raises 429 if MAX_JOBS_PER_DAY is exceeded."""
-    cap = settings.MAX_JOBS_PER_DAY
-    if not cap or cap <= 0:
+def client_ip(request: Optional[Request]) -> str:
+    """Best-effort client IP. On Cloud Run the Google front end appends the real client
+    address as the LAST X-Forwarded-For entry (earlier entries are client-controlled)."""
+    if request is None:
+        return "unknown"
+    xff = request.headers.get("x-forwarded-for", "")
+    if xff:
+        last = xff.split(",")[-1].strip()
+        if last:
+            return last
+    return request.client.host if request.client else "unknown"
+
+
+def _ip_key(ip: str) -> str:
+    # Never store raw IPs: a salted hash is enough for per-day counting.
+    salt = (settings.GOOGLE_CLOUD_PROJECT or "showrunner").encode("utf-8")
+    return hashlib.sha256(salt + ip.encode("utf-8")).hexdigest()[:16]
+
+
+def consume_daily_quota(request: Optional[Request] = None) -> None:
+    """Counts one generation (new job, refinement or resume) for today (UTC).
+
+    Raises 429 with a friendly message when either the global MAX_JOBS_PER_DAY cap or the
+    per-client MAX_JOBS_PER_IP_PER_DAY cap is reached. Counters live in DATA_DIR/usage.json
+    (on the GCS-mounted volume in Cloud Run, so they survive restarts).
+    """
+    cap = settings.MAX_JOBS_PER_DAY or 0
+    ip_cap = settings.MAX_JOBS_PER_IP_PER_DAY or 0
+    if cap <= 0 and ip_cap <= 0:
         return
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    key = _ip_key(client_ip(request))
     with _usage_lock:
         path = _usage_file()
         data: dict = {}
@@ -64,17 +91,47 @@ def consume_daily_quota() -> None:
                 data = json.loads(path.read_text(encoding="utf-8"))
         except Exception:
             data = {}
-        count = int(data.get(today, 0))
-        if count >= cap:
+        day = data.get(today)
+        if not isinstance(day, dict):  # legacy format: {"YYYY-MM-DD": count}
+            day = {"total": int(day or 0), "ips": {}}
+        total = int(day.get("total", 0))
+        ips = day.get("ips") or {}
+        mine = int(ips.get(key, 0))
+        if cap > 0 and total >= cap:
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail=f"Daily demo limit reached ({cap} productions/day). Please try again tomorrow.",
+                detail=(
+                    f"The public demo has reached today's limit of {cap} AI productions. "
+                    "Please come back tomorrow (UTC) - meanwhile, watch the sample films in the gallery."
+                ),
             )
-        data = {today: count + 1}
+        if ip_cap > 0 and mine >= ip_cap:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=(
+                    f"You've used all {ip_cap} of your free AI productions for today. "
+                    "Please come back tomorrow (UTC) - the sample films in the gallery are always available."
+                ),
+            )
+        ips[key] = mine + 1
+        data = {today: {"total": total + 1, "ips": ips}}
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".json.tmp")
+        tmp = path.with_suffix(f".json.{uuid.uuid4().hex[:8]}.tmp")
         tmp.write_text(json.dumps(data), encoding="utf-8")
         os.replace(tmp, path)
+
+
+def sample_job_ids() -> set[str]:
+    return {j.strip() for j in re.split(r"[,;]", settings.SAMPLE_JOB_IDS or "") if j.strip()}
+
+
+def ensure_not_sample(job_id: str) -> None:
+    """Showcase samples are read-only so nobody can spend money re-cutting them."""
+    if job_id in sample_job_ids():
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This is a read-only sample production. Start your own production to direct edits.",
+        )
 
 
 def safe_upload_name(original_name: Optional[str], content_type: Optional[str] = None) -> str:

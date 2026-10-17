@@ -70,6 +70,13 @@ class Settings(BaseSettings):
     MAX_JOBS_PER_DAY: int = 0
     # CORS_ORIGINS: comma-separated list of allowed origins ("*" = any, never with credentials).
     CORS_ORIGINS: str = "*"
+    # Per-job cost caps (0 = unlimited). Public deployments should set both.
+    MAX_SHOTS_PER_JOB: int = 0
+    MAX_RUNTIME_S: float = 0
+    # Per-client-IP cap on generations (new jobs + refinements) per UTC day (0 = unlimited)
+    MAX_JOBS_PER_IP_PER_DAY: int = 0
+    # Comma-separated job ids that are read-only showcase samples (no chat / resume)
+    SAMPLE_JOB_IDS: str = ""
     # Upload limits for reference images
     MAX_UPLOAD_FILES: int = 5
     MAX_UPLOAD_BYTES: int = 10 * 1024 * 1024

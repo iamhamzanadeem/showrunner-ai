@@ -226,6 +226,7 @@ class JobSummaryResponse(BaseModel):
     created_at: str
     poster_url: Optional[str] = None
     final_video_url: Optional[str] = None
+    is_sample: bool = False
 
 
 class HealthResponse(BaseModel):
@@ -236,3 +237,5 @@ class HealthResponse(BaseModel):
     providers: Optional[Dict[str, str]] = None
     models: Optional[Dict[str, str]] = None
     auth_required: bool = False
+    limits: Optional[Dict[str, float]] = None
+    sample_job_ids: List[str] = Field(default_factory=list)

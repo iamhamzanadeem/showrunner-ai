@@ -33,6 +33,55 @@ def save_job_state(job: Job) -> None:
                 pass
 
 
+def plan_limits_note() -> str:
+    """Brief suffix telling the planner about deployment cost caps (empty when uncapped)."""
+    parts = []
+    if settings.MAX_SHOTS_PER_JOB > 0:
+        parts.append(f"at most {settings.MAX_SHOTS_PER_JOB} shots in total")
+    if settings.MAX_RUNTIME_S > 0:
+        parts.append(f"at most {int(settings.MAX_RUNTIME_S)} seconds total runtime")
+    if not parts:
+        return ""
+    return (
+        "\n\nHARD PRODUCTION LIMITS for this deployment (override every other length guidance): "
+        + " and ".join(parts)
+        + ". Tell the complete story within these limits."
+    )
+
+
+def enforce_plan_caps(plan: Plan) -> int:
+    """Trims a plan to MAX_SHOTS_PER_JOB / MAX_RUNTIME_S (safety net if the model ignores
+    the limits). Keeps story order, always keeps the final shot as the ending, and drops
+    empty scenes. Returns the number of shots removed."""
+    max_shots = settings.MAX_SHOTS_PER_JOB
+    max_runtime = settings.MAX_RUNTIME_S
+    if max_shots <= 0 and max_runtime <= 0:
+        return 0
+    flat = [(sc, sh) for sc in plan.scenes for sh in sc.shots]
+    if not flat:
+        return 0
+    last = flat[-1]
+    keep = []
+    runtime = last[1].duration_s
+    for item in flat[:-1]:
+        if max_shots > 0 and len(keep) + 1 >= max_shots:
+            break
+        if max_runtime > 0 and runtime + item[1].duration_s > max_runtime:
+            break
+        keep.append(item)
+        runtime += item[1].duration_s
+    keep.append(last)
+    keep_ids = {id(sh) for _, sh in keep}
+    removed = len(flat) - len(keep)
+    if removed:
+        for sc in plan.scenes:
+            sc.shots = [sh for sh in sc.shots if id(sh) in keep_ids]
+            if sc.shots:
+                sc.shots[0].chain_from_previous = False
+        plan.scenes = [sc for sc in plan.scenes if sc.shots]
+    return removed
+
+
 async def run_planner(job: Job) -> Plan:
     """Executes the planning pipeline stage, emitting live events and saving state."""
     job.status = JobStatus.planning
@@ -55,10 +104,17 @@ async def run_planner(job: Job) -> Plan:
 
         # Call the planner provider
         plan = await providers.planner.generate_plan(
-            brief=job.brief,
+            brief=job.brief + plan_limits_note(),
             mode=job.mode,
             ref_images=job.reference_images,
         )
+        removed = enforce_plan_caps(plan)
+        if removed:
+            await event_bus.publish(
+                job_id=job.id,
+                step="PLAN",
+                message=f"Public demo limits applied: trimmed {removed} shot(s) to stay within {settings.MAX_SHOTS_PER_JOB or '∞'} shots / {int(settings.MAX_RUNTIME_S) or '∞'}s.",
+            )
 
         await event_bus.publish(
             job_id=job.id,

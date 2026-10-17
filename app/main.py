@@ -37,6 +37,8 @@ from app.pipeline.planner import save_job_state
 from app.security import (
     auth_required,
     consume_daily_quota,
+    ensure_not_sample,
+    sample_job_ids,
     is_valid_job_id,
     require_demo_token,
     safe_upload_name,
@@ -150,6 +152,13 @@ async def get_health() -> HealthResponse:
         providers=settings.get_all_modality_providers(),
         models=settings.get_configured_models(),
         auth_required=auth_required(),
+        limits={
+            "max_jobs_per_day": settings.MAX_JOBS_PER_DAY,
+            "max_jobs_per_ip_per_day": settings.MAX_JOBS_PER_IP_PER_DAY,
+            "max_shots_per_job": settings.MAX_SHOTS_PER_JOB,
+            "max_runtime_s": settings.MAX_RUNTIME_S,
+        },
+        sample_job_ids=sorted(sample_job_ids()),
     )
 
 
@@ -204,8 +213,13 @@ async def create_job(request: Request) -> Dict[str, Any]:
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="Creative brief is required.",
         )
+    if len(brief) > 4000:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Creative brief is too long (max 4000 characters).",
+        )
 
-    consume_daily_quota()
+    consume_daily_quota(request)
 
     job_dir = settings.get_job_dir(job_id)
     if pending_uploads:
@@ -299,8 +313,12 @@ async def list_jobs() -> List[JobSummaryResponse]:
             final_video_url=j.final_video_url,
         )
 
+    samples = sample_job_ids()
     summaries = list(results.values())
+    for summary in summaries:
+        summary.is_sample = summary.id in samples
     summaries.sort(key=lambda s: s.created_at, reverse=True)
+    summaries.sort(key=lambda s: not s.is_sample)  # stable: samples first, newest first
     return summaries
 
 
@@ -317,11 +335,12 @@ async def get_job(job_id: str) -> Job:
 
 
 @app.post("/api/jobs/{job_id}/chat", dependencies=[Depends(require_demo_token)])
-async def chat_job_refinement(job_id: str, payload: ChatRequest) -> Dict[str, Any]:
+async def chat_job_refinement(job_id: str, payload: ChatRequest, request: Request) -> Dict[str, Any]:
     """
     Submits a director chat message to refine a completed job.
     Returns 409 Conflict if the job is currently processing another stage.
     """
+    ensure_not_sample(job_id)
     job = load_job(job_id)
     if not job:
         raise HTTPException(
@@ -355,7 +374,7 @@ async def chat_job_refinement(job_id: str, payload: ChatRequest) -> Dict[str, An
             detail="This production never finished. Resume it first (POST /api/jobs/{id}/resume).",
         )
 
-    consume_daily_quota()
+    consume_daily_quota(request)
 
     # Append user message to chat history
     user_msg = ChatMessage(role="user", text=message)
@@ -380,11 +399,12 @@ async def chat_job_refinement(job_id: str, payload: ChatRequest) -> Dict[str, An
 
 
 @app.post("/api/jobs/{job_id}/resume", dependencies=[Depends(require_demo_token)])
-async def resume_job(job_id: str) -> Dict[str, Any]:
+async def resume_job(job_id: str, request: Request) -> Dict[str, Any]:
     """
     Resumes a failed/interrupted production, reusing every asset already generated
     (reference sheets, soundtrack, voiceover, accepted shots) and re-rendering the rest.
     """
+    ensure_not_sample(job_id)
     job = load_job(job_id)
     if not job:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Job '{job_id}' not found.")
@@ -396,7 +416,7 @@ async def resume_job(job_id: str) -> Dict[str, Any]:
             detail=f"Only failed jobs can be resumed (current status '{job.status.value}').",
         )
 
-    consume_daily_quota()
+    consume_daily_quota(request)
 
     job.status = JobStatus.queued
     job.error = None
