@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any, List, Optional
 from google.genai import types
@@ -111,6 +112,8 @@ Your job is to transform a creative brief into a comprehensive production bluepr
    - For 'short_film' mode: 120-180s runtime total, 15-25 shots across 4-7 scenes with narrative progression (Act I setup, Act II confrontation, Act III resolution).
    - CRITICAL DURATION CONSTRAINT: Every single shot MUST have a duration_s of exactly 4, 6, or 8 seconds (Veo generator restriction).
    - CONTINUITY CHAINING: Set chain_from_previous=true for shots within the same scene that depict continuous unbroken action from the previous shot. The first shot of every scene MUST have chain_from_previous=false.
+   - VOICEOVER TIMING: a vo_line must be speakable inside its own shot at a natural narrator pace: at most ~2 words per second of shot duration (4s -> 8 words, 6s -> 12, 8s -> 16). Leave vo_line empty on shots that should breathe.
+   - If the brief states a specific runtime or shot count, honour it exactly (it overrides the default ranges above).
    - Generative visual prompts must be concrete, cinematic, vivid, describing subject, environment, lighting, motion, and color palette without quality buzzwords.
 """
 
@@ -122,6 +125,33 @@ def _snap_duration(d: float) -> float:
     elif d <= 7.0:
         return 6.0
     return 8.0
+
+
+_HEX_RE = re.compile(r"#(?:[0-9a-fA-F]{6}|[0-9a-fA-F]{3})\b")
+
+
+def _clean_palette(raw_palette: Any) -> List[str]:
+    """Normalises the palette returned by the model.
+
+    Gemini occasionally collapses the whole list into one malformed string such as
+    ``"#0A0B10','#1E2A4A','#5C7CFA"``; split such entries back into individual colours.
+    """
+    if isinstance(raw_palette, str):
+        raw_palette = [raw_palette]
+    colours: List[str] = []
+    for entry in raw_palette or []:
+        if not isinstance(entry, str):
+            continue
+        hexes = _HEX_RE.findall(entry)
+        if hexes:
+            colours.extend(h.upper() for h in hexes)
+        else:
+            for piece in re.split(r"[,;'\"\[\]]+", entry):
+                piece = piece.strip()
+                if piece:
+                    colours.append(piece)
+    deduped = list(dict.fromkeys(colours))
+    return deduped[:6]
 
 
 class GooglePlannerProvider(BasePlannerProvider):
@@ -227,7 +257,7 @@ Design a complete, broadcast-ready production blueprint adhering to all director
         raw_bible = raw.get("bible") or {}
         raw_style = raw_bible.get("style") or {}
         style = BibleStyle(
-            palette=raw_style.get("palette") or ["#0A0F1D", "#00F0FF", "#7000FF", "#FFFFFF"],
+            palette=_clean_palette(raw_style.get("palette")) or ["#0A0F1D", "#00F0FF", "#7000FF", "#FFFFFF"],
             lighting=raw_style.get("lighting") or "Cinematic directional key light with atmospheric rim fill",
             lens=raw_style.get("lens") or "35mm anamorphic prime, subtle horizontal flare",
             mood=raw_style.get("mood") or "Cinematic, dramatic, visionary",
