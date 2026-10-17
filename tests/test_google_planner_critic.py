@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+from google.genai import errors
 import pytest
 
 from app.config import Settings
@@ -73,12 +74,14 @@ async def test_call_with_retry_backoff():
         nonlocal call_counts
         call_counts += 1
         if call_counts == 1:
-            err = Exception("429 Resource Exhausted: Rate limit exceeded")
-            setattr(err, "status", 429)
-            raise err
+            raise errors.ClientError(
+                429,
+                {"error": {"code": 429, "message": "Resource Exhausted: Rate limit exceeded", "status": "RESOURCE_EXHAUSTED"}},
+            )
         return "success"
 
-    res = await call_with_retry(flaky_func, max_retries=2, base_delay=0.01)
+    with patch("asyncio.sleep", return_value=None):
+        res = await call_with_retry(flaky_func, max_retries=2, base_delay=0.01)
     assert res == "success"
     assert call_counts == 2
 

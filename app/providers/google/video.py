@@ -4,7 +4,7 @@ import asyncio
 import logging
 from pathlib import Path
 import time
-from typing import List, Optional
+from typing import Any, Callable, List, Optional
 from google.genai import types
 
 from app.config import settings
@@ -57,6 +57,7 @@ class GoogleVideoProvider(BaseVideoProvider):
         shot_num: int = 1,
         attempt: int = 1,
         reference_images: Optional[List[str]] = None,
+        on_operation_started: Optional[Callable[[str], None]] = None,
     ) -> str:
         # Veo calls on Vertex AI require us-central1 (or VERTEX_LOCATION_MEDIA)
         client = get_genai_client(
@@ -147,7 +148,17 @@ class GoogleVideoProvider(BaseVideoProvider):
                 kwargs["image"] = image_arg
             return client.models.generate_videos(**kwargs)
 
-        op = await call_with_retry(_launch_generate)
+        op = await call_with_retry(_launch_generate, retry=False)
+
+        if on_operation_started is not None:
+            op_name = getattr(op, "name", None)
+            if op_name:
+                try:
+                    res = on_operation_started(op_name)
+                    if asyncio.iscoroutine(res):
+                        await res
+                except Exception as e:
+                    logger.warning("on_operation_started callback failed: %s", e)
 
         # Poll operation asynchronously until completion or timeout
         start_time = time.time()

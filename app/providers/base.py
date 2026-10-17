@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import List, Optional
+from typing import Callable, List, Optional
 from pydantic import BaseModel
 from app.models import Bible, BibleStyle, CritiqueResult, Plan, PlanEdit, Shot, VideoMode
 
@@ -85,6 +85,7 @@ class BaseVideoProvider(ABC):
         shot_num: int = 1,
         attempt: int = 1,
         reference_images: Optional[List[str]] = None,
+        on_operation_started: Optional[Callable[[str], None]] = None,
     ) -> str:
         """Generates a video clip and returns the local file path or URL."""
         pass

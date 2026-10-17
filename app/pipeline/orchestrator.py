@@ -11,6 +11,7 @@ from app.config import settings
 from app.events import event_bus
 from app.models import (
     ChatMessage,
+    CritiqueResult,
     Job,
     JobStatus,
     JobVersion,
@@ -119,6 +120,223 @@ def _resolve_existing_upload(url: Optional[str]) -> Optional[str]:
     if candidate.is_relative_to(jobs_root) and candidate.is_file():
         return url
     return None
+
+
+class ShotProductionError(RuntimeError):
+    """Raised when a shot produced no usable clip after all attempts (fatal for the job)."""
+
+
+async def _produce_shot(
+    job: Job,
+    scene,
+    shot,
+    s_idx: int,
+    job_dir: Path,
+    providers,
+    first_frame_path: Optional[Path],
+    start_attempt: int,
+    max_attempts: int,
+    is_refinement: bool = False,
+) -> None:
+    """
+    Keyframe -> Veo clip -> critic loop for one shot, shared by run_pipeline and run_refinement.
+
+    Failure policy (Fix #6):
+      * A provider error on one attempt (keyframe/Veo) is logged and the next attempt is tried.
+      * A critic error does not burn another Veo render: the clip is accepted, flagged as fallback.
+      * When attempts are exhausted, the best-scoring clip so far is accepted (flagged fallback).
+      * Only when NO usable clip exists at all is ShotProductionError raised (fatal for the job).
+    """
+    plan = job.plan
+    verb = "Re-" if is_refinement else ""
+    attempt = start_attempt
+    best_critique: Optional[CritiqueResult] = None
+    best_clip_path: Optional[Path] = None
+    best_keyframe_url: Optional[str] = None
+    last_error: Optional[BaseException] = None
+
+    while attempt <= max_attempts:
+        await event_bus.publish(
+            job_id=job.id,
+            step="KEYFRAME",
+            message=f"{verb}{'g' if verb else 'G'}enerating visual keyframe for {shot.id} (Attempt #{attempt})...",
+            shot_id=shot.id,
+            scene_id=scene.id,
+            data={"attempt": attempt, "prompt": shot.visual_prompt},
+        )
+
+        try:
+            kf_path = await providers.image.generate_keyframe(
+                prompt=shot.visual_prompt,
+                style=plan.bible.style,
+                ref_image=shot.first_frame_url if first_frame_path else None,
+                ref_images=_shot_reference_sheets(job, shot, limit=2 if first_frame_path else 3),
+                job_dir=job_dir,
+                shot_id=shot.id,
+                scene_num=scene.scene_number,
+                shot_num=s_idx + 1,
+                attempt=attempt,
+            )
+            keyframe_rel_url = f"/media/{job.id}/{Path(kf_path).name}"
+            shot.image_url = keyframe_rel_url
+
+            await event_bus.publish(
+                job_id=job.id,
+                step="GEN",
+                message=f"{verb}{'r' if verb else 'R'}endering clip for {shot.id} ({shot.duration_s:.1f}s, Attempt #{attempt})...",
+                shot_id=shot.id,
+                scene_id=scene.id,
+                data={"attempt": attempt, "duration_s": shot.duration_s},
+            )
+
+            clip_path_str = await providers.video.generate_clip(
+                prompt=shot.visual_prompt,
+                duration_s=shot.duration_s,
+                initial_frame=_select_initial_frame(first_frame_path, kf_path),
+                job_dir=job_dir,
+                shot_id=shot.id,
+                scene_num=scene.scene_number,
+                shot_num=s_idx + 1,
+                attempt=attempt,
+                reference_images=_shot_reference_sheets(job, shot, limit=3),
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # provider failure for this attempt
+            last_error = exc
+            logger.warning("Attempt %d for %s failed: %s", attempt, shot.id, exc)
+            await event_bus.publish(
+                job_id=job.id,
+                step="RETRY" if attempt < max_attempts else "ERROR",
+                message=f"Generation attempt #{attempt} for {shot.id} failed: {exc}",
+                shot_id=shot.id,
+                scene_id=scene.id,
+                data={"shot_id": shot.id, "attempt": attempt, "error": str(exc)},
+            )
+            attempt += 1
+            continue
+
+        clip_path = Path(clip_path_str)
+        clip_rel_url = f"/media/{job.id}/{clip_path.name}"
+        shot.video_url = str(clip_path)
+
+        shot.status = ShotStatus.critiquing
+        save_job_state(job)
+
+        critic_failed = False
+        try:
+            critique = await providers.critic.critique_clip(
+                video_path=str(clip_path),
+                shot=shot,
+                bible=plan.bible,
+                attempt=attempt,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("Critic failed for %s attempt %d: %s", shot.id, attempt, exc)
+            critic_failed = True
+            critique = CritiqueResult(
+                shot_id=shot.id,
+                passed=True,
+                score=settings.SR_CRITIC_PASS_SCORE,
+                reasons=[f"[critic_unavailable] Critic review failed ({exc}); clip accepted without review."],
+                suggested_prompt_fix=None,
+            )
+        shot.last_critique = critique
+
+        shot.attempts.append(
+            ShotAttempt(
+                attempt_number=attempt,
+                prompt=shot.visual_prompt,
+                image_url=keyframe_rel_url,
+                clip_url=clip_rel_url,
+                critique=critique,
+            )
+        )
+
+        if best_critique is None or critique.score > best_critique.score:
+            best_critique = critique
+            best_clip_path = clip_path
+            best_keyframe_url = keyframe_rel_url
+
+        if critique.passed:
+            shot.status = ShotStatus.passed
+            shot.best_critique = critique
+            if critic_failed:
+                shot.is_flagged_fallback = True
+            await event_bus.publish(
+                job_id=job.id,
+                step="CRITIC_PASS",
+                message=(
+                    f"Critic {'UNAVAILABLE - accepted' if critic_failed else 'PASSED'} {shot.id} "
+                    f"(Score: {critique.score:.2f}). {'; '.join(critique.reasons)}"
+                ),
+                shot_id=shot.id,
+                scene_id=scene.id,
+                data={
+                    "shot_id": shot.id,
+                    "score": critique.score,
+                    "reasons": critique.reasons,
+                    "attempt": attempt,
+                },
+            )
+            return
+
+        if attempt < max_attempts:
+            shot.status = ShotStatus.retrying
+            shot.retry_count += 1
+            await event_bus.publish(
+                job_id=job.id,
+                step="CRITIC_FAIL",
+                message=f"Critic REJECTED {shot.id} (Score: {critique.score:.2f}). Issues: {'; '.join(critique.reasons)}",
+                shot_id=shot.id,
+                scene_id=scene.id,
+                data={
+                    "shot_id": shot.id,
+                    "score": critique.score,
+                    "reasons": critique.reasons,
+                    "suggested_prompt_fix": critique.suggested_prompt_fix,
+                    "attempt": attempt,
+                },
+            )
+            fix = critique.suggested_prompt_fix or "Improve contrast and character consistency"
+            shot.prompt_history.append(shot.visual_prompt)
+            revised_prompt = f"{shot.visual_prompt} | Correction: {fix}"
+            shot.visual_prompt = revised_prompt
+            await event_bus.publish(
+                job_id=job.id,
+                step="RETRY",
+                message=f"Retrying {shot.id} with revised directive: '{fix}'",
+                shot_id=shot.id,
+                scene_id=scene.id,
+                data={"shot_id": shot.id, "revised_prompt": revised_prompt, "next_attempt": attempt + 1},
+            )
+            save_job_state(job)
+        attempt += 1
+
+    # Attempts exhausted
+    if best_clip_path is not None and best_critique is not None:
+        shot.status = ShotStatus.passed
+        shot.is_flagged_fallback = True
+        shot.best_critique = best_critique
+        shot.video_url = str(best_clip_path)
+        shot.image_url = best_keyframe_url
+        await event_bus.publish(
+            job_id=job.id,
+            step="CRITIC_FAIL",
+            message=f"Max retries reached for {shot.id}. Accepting best attempt (Score: {best_critique.score:.2f}) with fallback flag.",
+            shot_id=shot.id,
+            scene_id=scene.id,
+            data={"shot_id": shot.id, "score": best_critique.score, "fallback": True},
+        )
+        return
+
+    shot.status = ShotStatus.failed
+    save_job_state(job)
+    raise ShotProductionError(
+        f"Shot {shot.id} produced no usable clip after {max_attempts - start_attempt + 1} attempt(s): {last_error}"
+    )
 
 
 async def run_pipeline(job: Job) -> None:
@@ -259,166 +477,26 @@ async def run_pipeline(job: Job) -> None:
                             },
                         )
 
-                    # Critic & Generation Retry Loop
-                    attempt = 1
-                    max_attempts = settings.MAX_RETRIES + 1
-                    best_critique = None
-                    best_clip_path = None
-                    best_keyframe_url = None
-
-                    while attempt <= max_attempts:
-                        # 1. Generate keyframe
-                        await event_bus.publish(
-                            job_id=job.id,
-                            step="KEYFRAME",
-                            message=f"Generating visual keyframe for {shot.id} (Attempt #{attempt})...",
-                            shot_id=shot.id,
-                            scene_id=scene.id,
-                            data={"attempt": attempt, "prompt": shot.visual_prompt},
-                        )
-
-                        kf_path = await providers.image.generate_keyframe(
-                            prompt=shot.visual_prompt,
-                            style=plan.bible.style,
-                            ref_image=shot.first_frame_url if first_frame_path else None,
-                            ref_images=_shot_reference_sheets(job, shot, limit=2 if first_frame_path else 3),
-                            job_dir=job_dir,
-                            shot_id=shot.id,
-                            scene_num=scene.scene_number,
-                            shot_num=s_idx + 1,
-                            attempt=attempt,
-                        )
-                        keyframe_rel_url = f"/media/{job.id}/{Path(kf_path).name}"
-                        shot.image_url = keyframe_rel_url
-
-                        # 2. Generate video clip
-                        await event_bus.publish(
-                            job_id=job.id,
-                            step="GEN",
-                            message=f"Rendering clip for {shot.id} ({shot.duration_s:.1f}s, Attempt #{attempt})...",
-                            shot_id=shot.id,
-                            scene_id=scene.id,
-                            data={"attempt": attempt, "duration_s": shot.duration_s},
-                        )
-
-                        clip_path_str = await providers.video.generate_clip(
-                            prompt=shot.visual_prompt,
-                            duration_s=shot.duration_s,
-                            initial_frame=_select_initial_frame(first_frame_path, kf_path),
-                            job_dir=job_dir,
-                            shot_id=shot.id,
-                            scene_num=scene.scene_number,
-                            shot_num=s_idx + 1,
-                            attempt=attempt,
-                            reference_images=_shot_reference_sheets(job, shot, limit=3),
-                        )
-                        clip_path = Path(clip_path_str)
-                        clip_rel_url = f"/media/{job.id}/{clip_path.name}"
-                        shot.video_url = str(clip_path)
-
-                        # 3. Multimodal Critic Review
-                        shot.status = ShotStatus.critiquing
-                        save_job_state(job)
-
-                        critique = await providers.critic.critique_clip(
-                            video_path=str(clip_path),
-                            shot=shot,
-                            bible=plan.bible,
-                            attempt=attempt,
-                        )
-                        shot.last_critique = critique
-
-                        # Record shot attempt
-                        shot_attempt = ShotAttempt(
-                            attempt_number=attempt,
-                            prompt=shot.visual_prompt,
-                            image_url=keyframe_rel_url,
-                            clip_url=clip_rel_url,
-                            critique=critique,
-                        )
-                        shot.attempts.append(shot_attempt)
-
-                        if best_critique is None or critique.score > best_critique.score:
-                            best_critique = critique
-                            best_clip_path = clip_path
-                            best_keyframe_url = keyframe_rel_url
-
-                        if critique.passed:
-                            shot.status = ShotStatus.passed
-                            shot.best_critique = critique
-                            await event_bus.publish(
-                                job_id=job.id,
-                                step="CRITIC_PASS",
-                                message=f"Critic PASSED {shot.id} (Score: {critique.score:.2f}). {'; '.join(critique.reasons)}",
-                                shot_id=shot.id,
-                                scene_id=scene.id,
-                                data={
-                                    "shot_id": shot.id,
-                                    "score": critique.score,
-                                    "reasons": critique.reasons,
-                                    "attempt": attempt,
-                                },
-                            )
-                            break
-                        else:
-                            # Critic Failed
-                            if attempt < max_attempts:
-                                shot.status = ShotStatus.retrying
-                                shot.retry_count = attempt
-                                await event_bus.publish(
-                                    job_id=job.id,
-                                    step="CRITIC_FAIL",
-                                    message=f"Critic REJECTED {shot.id} (Score: {critique.score:.2f}). Issues: {'; '.join(critique.reasons)}",
-                                    shot_id=shot.id,
-                                    scene_id=scene.id,
-                                    data={
-                                        "shot_id": shot.id,
-                                        "score": critique.score,
-                                        "reasons": critique.reasons,
-                                        "suggested_prompt_fix": critique.suggested_prompt_fix,
-                                        "attempt": attempt,
-                                    },
-                                )
-
-                                # Merge prompt revision
-                                fix = critique.suggested_prompt_fix or "Improve contrast and character consistency"
-                                shot.prompt_history.append(shot.visual_prompt)
-                                revised_prompt = f"{shot.visual_prompt} | Correction: {fix}"
-                                shot.visual_prompt = revised_prompt
-
-                                await event_bus.publish(
-                                    job_id=job.id,
-                                    step="RETRY",
-                                    message=f"Retrying {shot.id} with revised directive: '{fix}'",
-                                    shot_id=shot.id,
-                                    scene_id=scene.id,
-                                    data={"shot_id": shot.id, "revised_prompt": revised_prompt, "next_attempt": attempt + 1},
-                                )
-                                attempt += 1
-                                save_job_state(job)
-                            else:
-                                # Exhausted retries: accept best-scoring fallback
-                                shot.status = ShotStatus.passed
-                                shot.is_flagged_fallback = True
-                                shot.best_critique = best_critique
-                                shot.video_url = str(best_clip_path)
-                                shot.image_url = best_keyframe_url
-                                await event_bus.publish(
-                                    job_id=job.id,
-                                    step="CRITIC_FAIL",
-                                    message=f"Max retries reached for {shot.id}. Accepting best attempt (Score: {best_critique.score:.2f}) with fallback flag.",
-                                    shot_id=shot.id,
-                                    scene_id=scene.id,
-                                    data={"shot_id": shot.id, "score": best_critique.score, "fallback": True},
-                                )
-                                break
+                    # Keyframe -> clip -> critic loop with best-so-far fallback
+                    await _produce_shot(
+                        job, scene, shot, s_idx, job_dir, providers, first_frame_path,
+                        start_attempt=1, max_attempts=settings.MAX_RETRIES + 1,
+                    )
 
                     last_clip_path = Path(shot.video_url)
                     prev_shot_id = shot.id
                     save_job_state(job)
 
-        # Run scenes with concurrency control
-        await asyncio.gather(*(process_scene(scene) for scene in plan.scenes))
+        # Run scenes with concurrency control. If any scene fails fatally, cancel its siblings
+        # so no further paid generations are started for a job that is already failed (Fix #6).
+        scene_tasks = [asyncio.create_task(process_scene(scene)) for scene in plan.scenes]
+        try:
+            await asyncio.gather(*scene_tasks)
+        except BaseException:
+            for t in scene_tasks:
+                t.cancel()
+            await asyncio.gather(*scene_tasks, return_exceptions=True)
+            raise
 
         # STEP 5: FINAL FFMPEG ASSEMBLY
         job.status = JobStatus.assembling
@@ -620,120 +698,13 @@ async def run_refinement(job: Job, user_message: str) -> None:
                         scene_id=scene.id,
                     )
 
-                # Critic & Generation Retry Loop
-                attempt = len(shot.attempts) + 1
-                max_attempts = attempt + settings.MAX_RETRIES
-                best_critique = None
-                best_clip_path = None
-                best_keyframe_url = None
-
-                while attempt <= max_attempts:
-                    await event_bus.publish(
-                        job_id=job.id,
-                        step="KEYFRAME",
-                        message=f"Re-generating keyframe for {shot.id} (Attempt #{attempt})...",
-                        shot_id=shot.id,
-                        scene_id=scene.id,
-                        data={"attempt": attempt, "prompt": shot.visual_prompt},
-                    )
-
-                    kf_path = await providers.image.generate_keyframe(
-                        prompt=shot.visual_prompt,
-                        style=job.plan.bible.style,
-                        ref_image=shot.first_frame_url if first_frame_path else None,
-                        ref_images=_shot_reference_sheets(job, shot, limit=2 if first_frame_path else 3),
-                        job_dir=job_dir,
-                        shot_id=shot.id,
-                        scene_num=scene.scene_number,
-                        shot_num=s_idx + 1,
-                        attempt=attempt,
-                    )
-                    keyframe_rel_url = f"/media/{job.id}/{Path(kf_path).name}"
-                    shot.image_url = keyframe_rel_url
-
-                    await event_bus.publish(
-                        job_id=job.id,
-                        step="GEN",
-                        message=f"Re-rendering clip for {shot.id} ({shot.duration_s:.1f}s, Attempt #{attempt})...",
-                        shot_id=shot.id,
-                        scene_id=scene.id,
-                        data={"attempt": attempt, "duration_s": shot.duration_s},
-                    )
-
-                    clip_path_str = await providers.video.generate_clip(
-                        prompt=shot.visual_prompt,
-                        duration_s=shot.duration_s,
-                        initial_frame=_select_initial_frame(first_frame_path, kf_path),
-                        job_dir=job_dir,
-                        shot_id=shot.id,
-                        scene_num=scene.scene_number,
-                        shot_num=s_idx + 1,
-                        attempt=attempt,
-                        reference_images=_shot_reference_sheets(job, shot, limit=3),
-                    )
-                    clip_path = Path(clip_path_str)
-                    clip_rel_url = f"/media/{job.id}/{clip_path.name}"
-                    shot.video_url = str(clip_path)
-
-                    shot.status = ShotStatus.critiquing
-                    save_job_state(job)
-
-                    critique = await providers.critic.critique_clip(
-                        video_path=str(clip_path),
-                        shot=shot,
-                        bible=job.plan.bible,
-                        attempt=attempt,
-                    )
-                    shot.last_critique = critique
-
-                    shot_attempt = ShotAttempt(
-                        attempt_number=attempt,
-                        prompt=shot.visual_prompt,
-                        image_url=keyframe_rel_url,
-                        clip_url=clip_rel_url,
-                        critique=critique,
-                    )
-                    shot.attempts.append(shot_attempt)
-
-                    if best_critique is None or critique.score > best_critique.score:
-                        best_critique = critique
-                        best_clip_path = clip_path
-                        best_keyframe_url = keyframe_rel_url
-
-                    if critique.passed:
-                        shot.status = ShotStatus.passed
-                        shot.best_critique = critique
-                        await event_bus.publish(
-                            job_id=job.id,
-                            step="CRITIC_PASS",
-                            message=f"Critic PASSED {shot.id} (Score: {critique.score:.2f})",
-                            shot_id=shot.id,
-                            scene_id=scene.id,
-                        )
-                        break
-                    else:
-                        if attempt < max_attempts:
-                            shot.status = ShotStatus.retrying
-                            shot.retry_count += 1
-                            fix = critique.suggested_prompt_fix or "Improve visual fidelity"
-                            shot.prompt_history.append(shot.visual_prompt)
-                            shot.visual_prompt = f"{shot.visual_prompt} | Correction: {fix}"
-                            await event_bus.publish(
-                                job_id=job.id,
-                                step="CRITIC_FAIL",
-                                message=f"Critic REJECTED {shot.id} (Score: {critique.score:.2f}). Retrying...",
-                                shot_id=shot.id,
-                                scene_id=scene.id,
-                            )
-                            attempt += 1
-                            save_job_state(job)
-                        else:
-                            shot.status = ShotStatus.passed
-                            shot.is_flagged_fallback = True
-                            shot.best_critique = best_critique
-                            shot.video_url = str(best_clip_path)
-                            shot.image_url = best_keyframe_url
-                            break
+                # Keyframe -> clip -> critic loop with best-so-far fallback
+                start_attempt = len(shot.attempts) + 1
+                await _produce_shot(
+                    job, scene, shot, s_idx, job_dir, providers, first_frame_path,
+                    start_attempt=start_attempt, max_attempts=start_attempt + settings.MAX_RETRIES,
+                    is_refinement=True,
+                )
 
                 last_clip_path = Path(shot.video_url)
                 prev_shot_id = shot.id

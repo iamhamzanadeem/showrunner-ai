@@ -4,7 +4,7 @@ import asyncio
 from pathlib import Path
 import re
 import subprocess
-from typing import List, Optional
+from typing import Any, Callable, Dict, List, Optional
 from PIL import Image, ImageDraw, ImageFont
 
 from app.config import settings
@@ -916,7 +916,16 @@ class MockVideoProvider(BaseVideoProvider):
         shot_num: int = 1,
         attempt: int = 1,
         reference_images: Optional[List[str]] = None,
+        on_operation_started: Optional[Callable[[str], None]] = None,
     ) -> str:
+        if on_operation_started is not None:
+            try:
+                res = on_operation_started(f"mock-op-{shot_id}-{attempt}")
+                if asyncio.iscoroutine(res):
+                    await res
+            except Exception:
+                pass
+
         if settings.MOCK_DELAY_S > 0:
             await asyncio.sleep(min(0.15, settings.MOCK_DELAY_S))
 
