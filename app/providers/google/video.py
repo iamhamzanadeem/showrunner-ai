@@ -131,6 +131,11 @@ class GoogleVideoProvider(BaseVideoProvider):
             config_kwargs["duration_seconds"] = 8
             config_kwargs["person_generation"] = "allow_adult"
 
+        is_vertex = getattr(client, "vertexai", False) is True
+        if is_vertex:
+            # Vertex requires generateAudio for Veo 3.x; the Gemini API rejects the field.
+            config_kwargs["generate_audio"] = bool(settings.SR_VEO_GENERATE_AUDIO)
+
         # Optional GCS output URI if configured
         if settings.SR_GCS_OUTPUT_URI:
             config_kwargs["output_gcs_uri"] = settings.SR_GCS_OUTPUT_URI
@@ -138,9 +143,14 @@ class GoogleVideoProvider(BaseVideoProvider):
         config = types.GenerateVideosConfig(**config_kwargs)
 
         # Launch video generation operation
+        model_id = self.model
+        if not is_vertex and model_id.endswith("-generate-001"):
+            # AI Studio (Gemini API) only serves the -preview Veo 3.1 IDs.
+            model_id = model_id[: -len("-001")] + "-preview"
+
         def _launch_generate():
             kwargs: dict = {
-                "model": self.model,
+                "model": model_id,
                 "prompt": prompt,
                 "config": config,
             }

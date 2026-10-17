@@ -29,6 +29,10 @@ def _write_pcm_or_wav(audio_data: bytes, out_path: Path, sample_rate: int = 2400
             wav_out.writeframes(audio_data)
 
 
+class _SkipInteractions(Exception):
+    """Internal sentinel: Interactions API not applicable for this client."""
+
+
 class GoogleTTSProvider(BaseTTSProvider):
     """
     Gemini Text-to-Speech voiceover engine.
@@ -63,8 +67,16 @@ class GoogleTTSProvider(BaseTTSProvider):
 
         active_voice = voice_name or self.voice_name
 
-        # Primary path: Interactions API per official documentation
+        # Vertex AI does not serve Gemini TTS models through the Interactions API
+        # ("Model ... is not supported by the Interactions API"), so go straight to
+        # generate_content with the AUDIO modality there.
+        use_interactions = getattr(client, "vertexai", False) is not True
+
+        # Primary path: Interactions API per official documentation (AI Studio)
         try:
+            if not use_interactions:
+                raise _SkipInteractions()
+
             def _call_interactions():
                 return client.interactions.create(
                     model=self.model,
@@ -98,6 +110,8 @@ class GoogleTTSProvider(BaseTTSProvider):
                 _write_pcm_or_wav(raw, out_path)
                 return str(out_path)
 
+        except _SkipInteractions:
+            pass
         except (AttributeError, Exception) as primary_exc:
             logger.warning(
                 "Primary Interactions API TTS failed (%s); attempting fallback via generate_content",
@@ -106,11 +120,9 @@ class GoogleTTSProvider(BaseTTSProvider):
 
         # Fallback path: generate_content with AUDIO modality
         try:
-            fallback_model = (
-                "gemini-2.5-flash-preview-tts"
-                if "3.8" in self.model
-                else self.model
-            )
+            # Same model: current Gemini TTS models also serve generate_content.
+            fallback_model = self.model
+            tts_prompt = f"Say in a warm, confident, cinematic narrator voice at a natural, unhurried but not slow pace: {text}"
 
             speech_config = types.SpeechConfig(
                 voice_config=types.VoiceConfig(
@@ -128,7 +140,7 @@ class GoogleTTSProvider(BaseTTSProvider):
             def _call_generate_content_tts():
                 return client.models.generate_content(
                     model=fallback_model,
-                    contents=text,
+                    contents=tts_prompt,
                     config=config,
                 )
 

@@ -33,7 +33,7 @@ class Settings(BaseSettings):
     SR_MODEL_PLANNER: str = "gemini-3.8-flash"
     SR_MODEL_CRITIC: str = "gemini-3.8-flash"
     SR_MODEL_IMAGE: str = "gemini-3.1-flash-image"
-    SR_MODEL_VIDEO: str = "veo-3.1-fast-generate-preview"
+    SR_MODEL_VIDEO: str = "veo-3.1-fast-generate-001"
     SR_MODEL_TTS: str = "gemini-3.8-flash-tts"
     SR_TTS_VOICE: str = "Kore"
     SR_MODEL_MUSIC: str = "lyria-3-clip-preview"
@@ -41,6 +41,9 @@ class Settings(BaseSettings):
     SR_ASPECT: str = "16:9"
     SR_VEO_TIMEOUT_S: int = 600
     SR_VEO_USE_REFERENCES: bool = False
+    # Veo native audio (Vertex only). The assembler replaces clip audio with VO + music,
+    # so audio-off is the default: ~20% cheaper ($0.08/s vs $0.10/s at 720p Fast).
+    SR_VEO_GENERATE_AUDIO: bool = False
     SR_CRITIC_PASS_SCORE: float = 0.7
 
     # Vertex AI locations

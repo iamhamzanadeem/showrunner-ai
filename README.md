@@ -53,7 +53,7 @@ To enforce strict visual fidelity, the agent generates dedicated character and p
 When consecutive shots share continuous motion within a scene, the orchestrator automatically uses **FFmpeg** to extract the exact last frame of shot $k$ and injects it as the starting frame for shot $k+1$. This eliminates jarring jump cuts and produces continuous physical motion.
 
 ### 4. Video Synthesis (Veo 3.1 Image-to-Video)
-Each shot is animated using Google's Veo 3.1 image-to-video foundation model (`veo-3.1-fast-generate-preview`), honoring 16:9 720p framing and explicit camera motion directives.
+Each shot is animated using Google's Veo 3.1 image-to-video foundation model (`veo-3.1-fast-generate-001` on Vertex AI), honoring 16:9 720p framing and explicit camera motion directives.
 
 ### 5. Multimodal Critic Loop (Gemini Vision)
 Before any clip reaches the final timeline, the Gemini Multimodal Critic inspects it against the shot specifications and visual bible. If artifacts, character drift, or pacing discrepancies are identified, the critic issues concrete prompt corrections and triggers an automated reshoot (bounded by `MAX_RETRIES`).
@@ -105,7 +105,7 @@ The production process doesn't end with the first cut. Directors can issue natur
 | **Director & Screenplay Planner** | `gemini-3.8-flash` | `SR_MODEL_PLANNER` | Google GenAI SDK (`generate_content` + `response_schema`) |
 | **Multimodal Video Critic** | `gemini-3.8-flash` | `SR_MODEL_CRITIC` | Google GenAI SDK (`generate_content` multimodal video) |
 | **Visual Bible & Keyframes** | `gemini-3.1-flash-image` | `SR_MODEL_IMAGE` | Google GenAI SDK (`generate_content` image modalities) |
-| **Cinematic Video Generation** | `veo-3.1-fast-generate-preview` | `SR_MODEL_VIDEO` | Google GenAI SDK (`generate_videos` image-to-video) |
+| **Cinematic Video Generation** | `veo-3.1-fast-generate-001` | `SR_MODEL_VIDEO` | Google GenAI SDK (`generate_videos` image-to-video) |
 | **Spoken Voiceover Synthesis** | `gemini-3.8-flash-tts` | `SR_MODEL_TTS` | Interactions API (`speech_metadata`) |
 | **Soundtrack & Score** | `lyria-3-clip-preview` / `lyria-3.5` | `SR_MODEL_MUSIC` | DeepMind Lyria Music API |
 
