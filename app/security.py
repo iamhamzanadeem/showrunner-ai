@@ -18,7 +18,7 @@ from app.config import settings
 TOKEN_HEADER = "X-Demo-Token"
 TOKEN_QUERY_PARAM = "token"
 
-JOB_ID_RE = re.compile(r"^job_[0-9a-f]{10}$")
+JOB_ID_RE = re.compile(r"^job_[A-Za-z0-9_-]{1,64}$")
 
 ALLOWED_IMAGE_EXTENSIONS = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp"}
 
