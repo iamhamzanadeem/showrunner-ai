@@ -238,7 +238,7 @@ async def _produce_shot(
                 message=f"{verb}{'r' if verb else 'R'}endering clip for {shot.id} ({shot.duration_s:.1f}s, Attempt #{attempt})...",
                 shot_id=shot.id,
                 scene_id=scene.id,
-                data={"attempt": attempt, "duration_s": shot.duration_s},
+                data={"attempt": attempt, "duration_s": shot.duration_s, "image_url": keyframe_rel_url},
             )
 
             clip_path_str = await providers.video.generate_clip(
@@ -334,6 +334,7 @@ async def _produce_shot(
                     "score": critique.score,
                     "reasons": critique.reasons,
                     "attempt": attempt,
+                    "image_url": shot.image_url,
                 },
             )
             return
@@ -383,7 +384,7 @@ async def _produce_shot(
             message=f"Max retries reached for {shot.id}. Accepting best attempt (Score: {best_critique.score:.2f}) with fallback flag.",
             shot_id=shot.id,
             scene_id=scene.id,
-            data={"shot_id": shot.id, "score": best_critique.score, "fallback": True},
+            data={"shot_id": shot.id, "score": best_critique.score, "fallback": True, "image_url": best_keyframe_url},
         )
         return
 

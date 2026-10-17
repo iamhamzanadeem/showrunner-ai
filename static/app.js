@@ -795,9 +795,12 @@ document.addEventListener("DOMContentLoaded", () => {
       case "GEN":
         updateProgress(55, `Rendering clip ${shotId || ""}`);
         if (shotId) {
+          // The keyframe exists once GEN fires: show it right away instead of leaving
+          // the 16:9 card black until a page reload.
           updateShotCard(shotId, {
             status: "generating",
             attempt: data.attempt,
+            image_url: data.image_url,
           });
         }
         break;
@@ -813,6 +816,7 @@ document.addEventListener("DOMContentLoaded", () => {
         if (shotId) {
           updateShotCard(shotId, {
             status: "passed",
+            image_url: data.image_url,
             critic: {
               passed: true,
               score: data.score,
@@ -826,6 +830,7 @@ document.addEventListener("DOMContentLoaded", () => {
         if (shotId) {
           updateShotCard(shotId, {
             status: data.fallback ? "passed" : "failed",
+            image_url: data.image_url,
             critic: {
               passed: false,
               score: data.score,
