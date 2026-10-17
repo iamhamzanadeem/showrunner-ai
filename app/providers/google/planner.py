@@ -23,6 +23,7 @@ from app.models import (
 )
 from app.providers.base import BasePlannerProvider
 from app.providers.google.client import call_with_retry, get_genai_client
+from app.providers.google.image import _resolve_image_path, image_mime_type
 
 logger = logging.getLogger("showrunner.providers.google.planner")
 
@@ -154,19 +155,17 @@ class GooglePlannerProvider(BasePlannerProvider):
         if ref_images:
             for ref in ref_images:
                 try:
-                    p = Path(ref)
-                    if not p.is_file():
-                        # Try relative to DATA_DIR
-                        alt_p = settings.DATA_DIR / ref.lstrip("/")
-                        if alt_p.is_file():
-                            p = alt_p
-                    if p.is_file():
+                    # Uploads are stored as /media/<job_id>/ref_images/<file>, which live under
+                    # DATA_DIR/jobs/<job_id>/...; _resolve_image_path handles that mapping.
+                    p = _resolve_image_path(ref)
+                    if p and p.is_file():
                         with open(p, "rb") as f:
                             img_bytes = f.read()
-                        mime = "image/png" if p.suffix.lower() == ".png" else "image/jpeg"
                         contents.append(
-                            types.Part.from_bytes(data=img_bytes, mime_type=mime)
+                            types.Part.from_bytes(data=img_bytes, mime_type=image_mime_type(p))
                         )
+                    else:
+                        logger.warning("Planner reference image could not be resolved: %s", ref)
                 except Exception as e:
                     logger.warning("Could not load reference image '%s': %s", ref, e)
 
@@ -234,12 +233,22 @@ Design a complete, broadcast-ready production blueprint adhering to all director
             mood=raw_style.get("mood") or "Cinematic, dramatic, visionary",
         )
 
+        # Map uploaded reference images onto bible entities. A single upload in ad mode is
+        # almost always the product, so prefer the product slot in that case.
+        refs = list(ref_images or [])
+        raw_products = raw_bible.get("products") or []
+        if refs and len(refs) == 1 and raw_products and mode == VideoMode.ad:
+            char_ref, prod_ref = None, refs[0]
+        else:
+            char_ref = refs[0] if refs else None
+            prod_ref = refs[1] if len(refs) > 1 else None
+
         characters = [
             CharacterSpec(
                 name=c.get("name", f"Character_{i+1}"),
                 appearance=c.get("appearance", "Distinctive cinematic hero attire"),
                 role=c.get("role"),
-                reference_image=ref_images[0] if ref_images and i == 0 else None,
+                reference_image=char_ref if i == 0 else None,
             )
             for i, c in enumerate(raw_bible.get("characters") or [])
         ]
@@ -249,7 +258,7 @@ Design a complete, broadcast-ready production blueprint adhering to all director
                     name="Protagonist",
                     appearance="Cinematic protagonist in tailored tactical apparel",
                     role="Lead",
-                    reference_image=ref_images[0] if ref_images else None,
+                    reference_image=char_ref,
                 )
             )
 
@@ -257,9 +266,9 @@ Design a complete, broadcast-ready production blueprint adhering to all director
             ProductSpec(
                 name=p.get("name", f"Product_{i+1}"),
                 description=p.get("description", "High-precision hero product"),
-                reference_image=ref_images[1] if ref_images and len(ref_images) > 1 and i == 0 else None,
+                reference_image=prod_ref if i == 0 else None,
             )
-            for i, p in enumerate(raw_bible.get("products") or [])
+            for i, p in enumerate(raw_products)
         ]
 
         bible = Bible(style=style, characters=characters, products=products)

@@ -36,13 +36,25 @@ def _resolve_image_path(ref_path: Optional[str]) -> Optional[Path]:
     return None
 
 
+def image_mime_type(img_path: Path) -> str:
+    """Maps an image file suffix to its MIME type (png/jpeg/webp)."""
+    suffix = img_path.suffix.lower()
+    if suffix == ".png":
+        return "image/png"
+    if suffix == ".webp":
+        return "image/webp"
+    return "image/jpeg"
+
+
+MAX_KEYFRAME_REFERENCES = 3
+
+
 def _load_image_part(img_path: Path) -> Optional[types.Part]:
     """Loads image bytes from disk and returns a types.Part object."""
     try:
         with open(img_path, "rb") as f:
             data = f.read()
-        mime = "image/png" if img_path.suffix.lower() == ".png" else "image/jpeg"
-        return types.Part.from_bytes(data=data, mime_type=mime)
+        return types.Part.from_bytes(data=data, mime_type=image_mime_type(img_path))
     except Exception as e:
         logger.warning("Failed to load reference image %s: %s", img_path, e)
         return None
@@ -109,6 +121,7 @@ class GoogleImageProvider(BaseImageProvider):
         scene_num: int = 1,
         shot_num: int = 1,
         attempt: int = 1,
+        ref_images: Optional[List[str]] = None,
     ) -> str:
         client = get_genai_client(api_key=self.api_key, project=self.project)
         out_dir = job_dir or settings.DATA_DIR
@@ -126,15 +139,46 @@ class GoogleImageProvider(BaseImageProvider):
             f"16:9 widescreen composition, broadcast feature film quality, highly detailed."
         )
 
-        contents: List[Any] = [full_prompt]
-
-        # Add up to 3 reference images (previous frame, character/product sheets)
+        # Collect up to 3 reference images: continuity frame first, then character/product sheets
+        image_parts: List[Any] = []
+        has_chain_frame = False
+        seen: set[str] = set()
+        candidates: List[tuple[str, bool]] = []
         if ref_image:
-            resolved_p = _resolve_image_path(ref_image)
-            if resolved_p:
-                part = _load_image_part(resolved_p)
-                if part:
-                    contents.append(part)
+            candidates.append((ref_image, True))
+        for r in ref_images or []:
+            if r:
+                candidates.append((r, False))
+        for ref, is_chain in candidates:
+            if len(image_parts) >= MAX_KEYFRAME_REFERENCES:
+                break
+            resolved_p = _resolve_image_path(ref)
+            if not resolved_p:
+                logger.warning("Keyframe reference image could not be resolved: %s", ref)
+                continue
+            key = str(resolved_p.resolve())
+            if key in seen:
+                continue
+            part = _load_image_part(resolved_p)
+            if part:
+                seen.add(key)
+                image_parts.append(part)
+                has_chain_frame = has_chain_frame or is_chain
+
+        if image_parts:
+            if has_chain_frame:
+                ref_note = (
+                    "Reference images attached: image 1 = previous shot's last frame (match its composition, "
+                    "lighting and continuity); any further images = character/product reference sheets."
+                )
+            else:
+                ref_note = "Reference images attached: character/product reference sheets."
+            full_prompt += (
+                f"\n{ref_note} Keep identity, face, costume, colors and product design EXACTLY consistent "
+                "with the reference sheets. Do not copy the sheet layout or background."
+            )
+
+        contents: List[Any] = [full_prompt, *image_parts]
 
         config = types.GenerateContentConfig(
             response_modalities=["IMAGE"],
@@ -164,6 +208,7 @@ class GoogleImageProvider(BaseImageProvider):
         description: str,
         style: BibleStyle,
         job_dir: Path,
+        ref_image: Optional[str] = None,
     ) -> str:
         client = get_genai_client(api_key=self.api_key, project=self.project)
         job_dir.mkdir(parents=True, exist_ok=True)
@@ -183,10 +228,22 @@ class GoogleImageProvider(BaseImageProvider):
             temperature=0.5,
         )
 
+        contents: List[Any] = [prompt]
+        upload_p = _resolve_image_path(ref_image) if ref_image else None
+        if upload_p:
+            part = _load_image_part(upload_p)
+            if part:
+                contents[0] = (
+                    prompt
+                    + "\nThe attached photo is the REAL {0} supplied by the client: reproduce its exact "
+                    "identity, shape, colors, materials, logos and proportions faithfully.".format(entity_type)
+                )
+                contents.append(part)
+
         def _call_nano_banana_ref():
             return client.models.generate_content(
                 model=self.model,
-                contents=[prompt],
+                contents=contents,
                 config=config,
             )
 

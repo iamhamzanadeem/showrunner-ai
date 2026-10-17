@@ -764,6 +764,7 @@ class MockImageProvider(BaseImageProvider):
         description: str,
         style: BibleStyle,
         job_dir: Path,
+        ref_image: Optional[str] = None,
     ) -> str:
         if settings.MOCK_DELAY_S > 0:
             await asyncio.sleep(min(0.1, settings.MOCK_DELAY_S))
@@ -816,6 +817,7 @@ class MockImageProvider(BaseImageProvider):
         scene_num: int = 1,
         shot_num: int = 1,
         attempt: int = 1,
+        ref_images: Optional[List[str]] = None,
     ) -> str:
         if settings.MOCK_DELAY_S > 0:
             await asyncio.sleep(min(0.1, settings.MOCK_DELAY_S))

@@ -10,7 +10,7 @@ from google.genai import types
 from app.config import settings
 from app.providers.base import BaseVideoProvider
 from app.providers.google.client import call_with_retry, get_genai_client
-from app.providers.google.image import _resolve_image_path
+from app.providers.google.image import _resolve_image_path, image_mime_type
 
 logger = logging.getLogger("showrunner.providers.google.video")
 
@@ -85,7 +85,7 @@ class GoogleVideoProvider(BaseVideoProvider):
             if frame_p.is_file():
                 with open(frame_p, "rb") as f:
                     img_bytes = f.read()
-                mime = "image/png" if frame_p.suffix.lower() == ".png" else "image/jpeg"
+                mime = image_mime_type(frame_p)
                 image_arg = types.Image(image_bytes=img_bytes, mime_type=mime)
 
         # Veo 3.1 reference images: ONLY when settings.SR_VEO_USE_REFERENCES is true,
@@ -106,7 +106,7 @@ class GoogleVideoProvider(BaseVideoProvider):
                 if ref_p and ref_p.is_file():
                     with open(ref_p, "rb") as f:
                         ref_bytes = f.read()
-                    mime = "image/png" if ref_p.suffix.lower() == ".png" else "image/jpeg"
+                    mime = image_mime_type(ref_p)
                     ref_image_configs.append(
                         types.VideoGenerationReferenceImage(
                             image=types.Image(image_bytes=ref_bytes, mime_type=mime),

@@ -60,25 +60,65 @@ def _select_initial_frame(
     return None
 
 
-def _get_reference_images(job: Job) -> List[str]:
+def _entity_sheet_url(job: Job, name: str, kind: str) -> Optional[str]:
+    refs = job.character_refs if kind == "character" else job.product_refs
+    if refs.get(name):
+        return refs[name]
+    if job.plan:
+        entities = job.plan.bible.characters if kind == "character" else job.plan.bible.products
+        for e in entities:
+            if e.name == name and e.reference_image:
+                return e.reference_image
+    return None
+
+
+def _shot_reference_sheets(job: Job, shot, limit: int = 3) -> List[str]:
     """
-    Collects character and product reference image URLs (max 3) from the job or plan.
-    Note: Since every shot normally has an initial keyframe, Veo reference images
-    effectively only apply if no keyframe exists.
+    Returns reference-sheet URLs for the characters/products relevant to a shot (max `limit`).
+    Relevance: explicit shot.characters_referenced / products_referenced, else a case-insensitive
+    name match in the shot's visual prompt or description. If nothing matches, falls back to all
+    character sheets, then product sheets.
     """
-    refs: List[str] = []
-    if job.character_refs:
-        refs.extend([r for r in job.character_refs.values() if r])
-    if job.product_refs:
-        refs.extend([r for r in job.product_refs.values() if r])
-    if not refs and job.plan and job.plan.bible:
-        for char in job.plan.bible.characters:
-            if char.reference_image:
-                refs.append(char.reference_image)
-        for prod in job.plan.bible.products:
-            if prod.reference_image:
-                refs.append(prod.reference_image)
-    return refs[:3]
+    if limit <= 0 or not job.plan:
+        return []
+    bible = job.plan.bible
+    text = f"{shot.visual_prompt} {shot.description}".lower()
+    explicit_chars = {n.lower() for n in (getattr(shot, "characters_referenced", None) or [])}
+    explicit_prods = {n.lower() for n in (getattr(shot, "products_referenced", None) or [])}
+
+    relevant: List[str] = []
+    for kind, entities, explicit in (
+        ("character", bible.characters, explicit_chars),
+        ("product", bible.products, explicit_prods),
+    ):
+        for e in entities:
+            lname = e.name.lower()
+            if lname in explicit or (lname and lname in text):
+                url = _entity_sheet_url(job, e.name, kind)
+                if url and url not in relevant:
+                    relevant.append(url)
+
+    if not relevant:
+        for kind, entities in (("character", bible.characters), ("product", bible.products)):
+            for e in entities:
+                url = _entity_sheet_url(job, e.name, kind)
+                if url and url not in relevant:
+                    relevant.append(url)
+    return relevant[:limit]
+
+
+def _resolve_existing_upload(url: Optional[str]) -> Optional[str]:
+    """Returns the URL if it points at an existing user-uploaded file under DATA_DIR/jobs."""
+    if not url or "/ref_images/" not in url:
+        return None
+    rel = url.lstrip("/")
+    if rel.startswith("media/"):
+        rel = rel[len("media/"):]
+    candidate = (settings.DATA_DIR / "jobs" / rel).resolve()
+    jobs_root = (settings.DATA_DIR / "jobs").resolve()
+    if candidate.is_relative_to(jobs_root) and candidate.is_file():
+        return url
+    return None
 
 
 async def run_pipeline(job: Job) -> None:
@@ -109,6 +149,7 @@ async def run_pipeline(job: Job) -> None:
                 description=char.appearance,
                 style=plan.bible.style,
                 job_dir=job_dir,
+                ref_image=_resolve_existing_upload(char.reference_image),
             )
             rel_url = f"/media/{job.id}/{Path(ref_path).name}"
             char.reference_image = rel_url
@@ -127,6 +168,7 @@ async def run_pipeline(job: Job) -> None:
                 description=prod.description,
                 style=plan.bible.style,
                 job_dir=job_dir,
+                ref_image=_resolve_existing_upload(prod.reference_image),
             )
             rel_url = f"/media/{job.id}/{Path(ref_path).name}"
             prod.reference_image = rel_url
@@ -187,8 +229,6 @@ async def run_pipeline(job: Job) -> None:
 
         # STEP 4: SHOT SYNTHESIS & CRITIC LOOP (Limited scene concurrency, sequential within scene)
         semaphore = asyncio.Semaphore(settings.MAX_PARALLEL_SCENES)
-        reference_images = _get_reference_images(job)
-
         async def process_scene(scene) -> None:
             async with semaphore:
                 last_clip_path: Optional[Path] = None
@@ -240,7 +280,8 @@ async def run_pipeline(job: Job) -> None:
                         kf_path = await providers.image.generate_keyframe(
                             prompt=shot.visual_prompt,
                             style=plan.bible.style,
-                            ref_image=shot.first_frame_url,
+                            ref_image=shot.first_frame_url if first_frame_path else None,
+                            ref_images=_shot_reference_sheets(job, shot, limit=2 if first_frame_path else 3),
                             job_dir=job_dir,
                             shot_id=shot.id,
                             scene_num=scene.scene_number,
@@ -269,7 +310,7 @@ async def run_pipeline(job: Job) -> None:
                             scene_num=scene.scene_number,
                             shot_num=s_idx + 1,
                             attempt=attempt,
-                            reference_images=reference_images,
+                            reference_images=_shot_reference_sheets(job, shot, limit=3),
                         )
                         clip_path = Path(clip_path_str)
                         clip_rel_url = f"/media/{job.id}/{clip_path.name}"
@@ -546,7 +587,6 @@ async def run_refinement(job: Job, user_message: str) -> None:
         save_job_state(job)
 
         # 3. Reshoot only affected shots in each scene
-        reference_images = _get_reference_images(job)
         for scene in job.plan.scenes:
             scene_affected = [s for s in scene.shots if s.id in affected_shot_ids]
             if not scene_affected:
@@ -600,7 +640,8 @@ async def run_refinement(job: Job, user_message: str) -> None:
                     kf_path = await providers.image.generate_keyframe(
                         prompt=shot.visual_prompt,
                         style=job.plan.bible.style,
-                        ref_image=shot.first_frame_url,
+                        ref_image=shot.first_frame_url if first_frame_path else None,
+                        ref_images=_shot_reference_sheets(job, shot, limit=2 if first_frame_path else 3),
                         job_dir=job_dir,
                         shot_id=shot.id,
                         scene_num=scene.scene_number,
@@ -628,7 +669,7 @@ async def run_refinement(job: Job, user_message: str) -> None:
                         scene_num=scene.scene_number,
                         shot_num=s_idx + 1,
                         attempt=attempt,
-                        reference_images=reference_images,
+                        reference_images=_shot_reference_sheets(job, shot, limit=3),
                     )
                     clip_path = Path(clip_path_str)
                     clip_rel_url = f"/media/{job.id}/{clip_path.name}"

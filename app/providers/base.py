@@ -44,8 +44,13 @@ class BaseImageProvider(ABC):
         scene_num: int = 1,
         shot_num: int = 1,
         attempt: int = 1,
+        ref_images: Optional[List[str]] = None,
     ) -> str:
-        """Generates a keyframe image and returns the local file path or URL."""
+        """Generates a keyframe image and returns the local file path or URL.
+
+        ref_image: optional continuity frame (previous shot's last frame).
+        ref_images: optional character/product reference sheets for identity consistency.
+        """
         pass
 
     @abstractmethod
@@ -56,8 +61,12 @@ class BaseImageProvider(ABC):
         description: str,
         style: BibleStyle,
         job_dir: Path,
+        ref_image: Optional[str] = None,
     ) -> str:
-        """Generates a reference sheet image for a character or product."""
+        """Generates a reference sheet image for a character or product.
+
+        ref_image: optional user-uploaded photo the sheet must stay faithful to.
+        """
         pass
 
 
