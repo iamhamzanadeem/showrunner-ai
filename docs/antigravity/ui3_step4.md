@@ -1,0 +1,15 @@
+# UI v3 · Step 4: polish pass (reviewer feedback on step 3)
+
+Context: `/workspace/agy_specs/ui3_context.md`. The final cut mode works; great. Reviewer screenshots (1440×900 and 1280×800) show these issues. Fix all of them, then self-review with screenshots in BOTH themes.
+
+1. **Final cut card in the narrow chat column** (final-mode, ~400px): the title wraps one word per line ("The / Last Light / of / Skerry / Rock") because the poster and text sit side by side. In narrow mode (and generally when the card is <480px wide) stack it: full-width 16:9 poster on top (with play overlay), then title (1 line, ellipsis), meta line, and the "Open final cut" button. When the panel is already open, the button should read "Viewing in panel" (secondary style) or highlight.
+2. **Thinking block summary line** is truncated in the narrow column ("Worked for 45m · 20 shots · 32 takes …"): allow it to wrap to 2 lines in narrow mode (no ellipsis).
+3. **Timeline fit**: for short films the timeline does not fill the available width (30s ad leaves a large empty gray area on the right). Compute px-per-second = max(minPxPerSec, availableWidth / totalDuration) so a short film exactly fills the track width; only overflow (horizontal scroll) when totalDuration × minPxPerSec > available width. Recompute on resize and when the panel opens.
+4. **Timeline legibility**: track clips are too short. Make the clip track ~64px tall (thumbnails cover), scene label row above (~22px, 12px semibold text), ruler below with 11px labels; the first label "0:00" is clipped at the left edge: pad the track/ruler by 8–12px on both sides (or align the first label left of its tick). Make the playhead clearly visible (accent 2px line with a small triangle/knob on the ruler) also at time 0, and show a hover time tooltip on the ruler.
+5. Below the KPI line, when no clip is selected, add a subtle hint: "Click a clip to inspect its takes and critic notes."
+6. **Shot detail strip**: make sure it's fully reachable (panel scrolls); when a clip is selected via click, smooth-scroll the panel so the strip's top is visible. Keep takes side by side (2–3 per row), thumbs 16:9.
+7. **Narrow chat trace** (final-mode): check the expanded thinking block at 400px wide: shot rows and take flows must not overflow horizontally; reduce thumb sizes slightly in narrow mode (take thumb 96×54).
+8. **Dark theme**: verify the timeline, panel, cards and shot detail have good contrast in dark mode (scene label backgrounds, ruler text, borders).
+9. **1280×800**: chat column ~360px, panel fills the rest; the timeline + KPI line should be visible without scrolling the panel at `/?job=job_aedcb881dc&cut=1`.
+
+Acceptance screenshots to review yourself: `/?job=job_eb80955254&cut=1` (light + dark), `/?job=job_eb80955254&shot=shot_4_2` (scrolled so the shot detail takes are visible), `/?job=job_aedcb881dc&cut=1` at 1280×800, `/?job=job_eb80955254&cut=1&expand=1` (narrow chat with thinking block expanded). No JS errors, `node --check`, quick tests pass, `git diff app/` empty. Summarize.

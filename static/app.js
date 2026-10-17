@@ -1,32 +1,52 @@
-/* Showrunner AI: agent workspace (vanilla JS, no build step). */
+/* Showrunner AI: Chat-app studio (UI v3 Step 2). Vanilla JS, no build step. */
 (() => {
   "use strict";
 
-  // ---------- Helpers ----------
+  // =========================================================
+  // Helpers
+  // =========================================================
   const $ = (id) => document.getElementById(id);
   const esc = (v) =>
     String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
   const BUSY = new Set(["queued", "planning", "planned", "generating", "critiquing", "assembling"]);
+
   const fmtDur = (s) => {
     if (s == null || isNaN(s)) return "–";
     s = Math.round(s);
     return s >= 60 ? `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}` : `${s}s`;
   };
+
   const fmtTime = (iso) => {
     if (!iso) return "";
     const d = new Date(iso);
     return isNaN(d) ? "" : d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   };
+
+  const fmtRelativeDate = (iso) => {
+    if (!iso) return "";
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return "";
+    const now = new Date();
+    if (d.toDateString() === now.toDateString()) return "Today";
+    const yest = new Date(now);
+    yest.setDate(now.getDate() - 1);
+    if (d.toDateString() === yest.toDateString()) return "Yesterday";
+    return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  };
+
   const scoreClass = (s) => (s >= 0.7 ? "hi" : s >= 0.55 ? "mid" : "lo");
   const scoreHtml = (s) => (s == null ? "" : `<span class="score ${scoreClass(s)}">${Number(s).toFixed(2)}</span>`);
   const shortId = (id) => String(id || "").replace(/^shot_/, "").replace("_", ".");
+
   const splitReason = (r) => {
     const m = /^\s*\[([a-z_ -]+)\]\s*(.*)$/i.exec(r || "");
     return m ? { tag: m[1].replace(/_/g, " "), text: m[2] } : { tag: null, text: r || "" };
   };
+
   const reasonHtml = (r) => {
     const { tag, text } = splitReason(r);
-    return `${tag ? `<span class="tag">${esc(tag)}</span>` : ""}${esc(text)}`;
+    return `${tag ? `<span class="reason-tag">${esc(tag)}</span>` : ""}${esc(text)}`;
   };
 
   const ICON = {
@@ -36,23 +56,46 @@
     critic: '<svg viewBox="0 0 24 24"><path d="M2.5 12s3.5-6.5 9.5-6.5S21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z" stroke="currentColor" stroke-width="1.8" fill="none"/><circle cx="12" cy="12" r="2.6" fill="currentColor"/></svg>',
     music: '<svg viewBox="0 0 24 24"><path d="M9 18V6l11-2v12" stroke="currentColor" stroke-width="1.8" fill="none"/><circle cx="6.5" cy="18" r="2.5" stroke="currentColor" stroke-width="1.8" fill="none"/><circle cx="17.5" cy="16" r="2.5" stroke="currentColor" stroke-width="1.8" fill="none"/></svg>',
     cut: '<svg viewBox="0 0 24 24"><circle cx="6" cy="7" r="2.6" stroke="currentColor" stroke-width="1.8" fill="none"/><circle cx="6" cy="17" r="2.6" stroke="currentColor" stroke-width="1.8" fill="none"/><path d="M8.2 8.4L20 18M8.2 15.6L20 6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
-    edit: '<svg viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16z" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linejoin="round"/></svg>',
     alert: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.8" fill="none"/><path d="M12 7.5v6M12 16.5v.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
     play: '<svg viewBox="0 0 24 24" width="14" height="14"><path d="M8 5l11 7-11 7z" fill="currentColor"/></svg>',
-    chev: '<svg class="card-chev" viewBox="0 0 24 24" width="14" height="14"><path d="M9 6l6 6-6 6" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"/></svg>',
+    chev: '<svg viewBox="0 0 24 24" width="16" height="16"><path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"/></svg>',
+    check: '<svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="9" fill="currentColor" opacity="0.15"/><path d="M8 12.5l2.5 2.5L16 9.5" stroke="currentColor" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>',
   };
 
-  // ---------- Theme ----------
+  // =========================================================
+  // Theme & Sidebar State Persistence
+  // =========================================================
   const THEME_KEY = "showrunner_theme";
+  const SIDEBAR_KEY = "showrunner_sidebar";
+
   function applyTheme(theme) {
     document.documentElement.setAttribute("data-theme", theme);
     try { localStorage.setItem(THEME_KEY, theme); } catch (e) { /* ignore */ }
   }
+
   $("theme-toggle").addEventListener("click", () => {
-    applyTheme(document.documentElement.getAttribute("data-theme") === "dark" ? "light" : "dark");
+    const cur = document.documentElement.getAttribute("data-theme") === "dark" ? "light" : "dark";
+    applyTheme(cur);
   });
 
-  // ---------- State ----------
+  function setSidebarCollapsed(collapsed) {
+    const layout = $("app-layout");
+    const expandBtn = $("sidebar-expand-btn");
+    layout.classList.toggle("sidebar-collapsed", collapsed);
+    expandBtn.classList.toggle("hidden", !collapsed);
+    try { localStorage.setItem(SIDEBAR_KEY, collapsed ? "collapsed" : "expanded"); } catch (e) { /* ignore */ }
+  }
+
+  $("sidebar-collapse-btn").addEventListener("click", () => setSidebarCollapsed(true));
+  $("sidebar-expand-btn").addEventListener("click", () => setSidebarCollapsed(false));
+
+  try {
+    if (localStorage.getItem(SIDEBAR_KEY) === "collapsed") setSidebarCollapsed(true);
+  } catch (e) { /* ignore */ }
+
+  // =========================================================
+  // State
+  // =========================================================
   const S = {
     health: null,
     sampleIds: new Set(),
@@ -66,27 +109,36 @@
     live: null,
     liveImages: {},
     editTargets: null,
-    selectedShot: null,
-    selectedTake: null,
-    playerMode: "final",
-    userPicked: false,
-    activeVersion: null,
-    openCards: new Set(),
-    closedCards: new Set(),
+    thinkingExpanded: false,
+    userToggledThinking: false,
+    showPlanShotlist: false,
     localNotes: [],
     firstRender: true,
     refreshing: false,
     refreshQueued: false,
     pollTimer: null,
     stagedFiles: [],
+    briefOpen: false,
+    inFinalMode: false,
+    activeVersion: 1,
+    selectedShotId: null,
+    selectedTakeAttempt: null,
+    playingTake: null,
+    timelineScale: 12,
+    shotTimings: [],
+    totalDuration: 0,
+    expandedVeoPrompt: false,
   };
 
-  // ---------- Notices / errors ----------
+  // =========================================================
+  // Notices / Errors
+  // =========================================================
   function showNotice(msg) {
     $("notice-text").textContent = msg;
     $("notice-banner").classList.remove("hidden");
   }
   $("notice-close").addEventListener("click", () => $("notice-banner").classList.add("hidden"));
+
   async function friendlyError(res, fallback) {
     const data = await res.json().catch(() => ({}));
     const msg = data.detail || `${fallback} (${res.status})`;
@@ -94,7 +146,9 @@
     return msg;
   }
 
-  // ---------- Health ----------
+  // =========================================================
+  // Health & Limits
+  // =========================================================
   async function checkHealth() {
     try {
       const res = await fetch("/api/health");
@@ -106,12 +160,13 @@
       const google = (d.active_provider || "") === "google";
       chip.classList.toggle("live", google);
       chip.classList.toggle("mock", !google);
-      $("provider-name").textContent = google ? "Vertex AI · live models" : "Mock engine";
+      $("provider-name").textContent = google ? "Vertex AI · live" : "Mock engine";
       renderLimits();
     } catch (e) {
       $("provider-name").textContent = "Offline";
     }
   }
+
   function renderLimits() {
     const l = S.limits || {};
     const parts = [];
@@ -124,7 +179,37 @@
   }
   const healthReady = checkHealth();
 
-  // ---------- Jobs list (gallery, recent, menu) ----------
+  // =========================================================
+  // Elapsed Time Calculator
+  // =========================================================
+  function getElapsedTime(job) {
+    if (!job || !job.created_at) return "";
+    const created = new Date(job.created_at).getTime();
+    let end = job.updated_at ? new Date(job.updated_at).getTime() : 0;
+    // Check if take timestamps extend later
+    if (S.takes) {
+      Object.values(S.takes).forEach((s) => {
+        (s.takes || []).forEach((tk) => {
+          if (tk.created_at) {
+            const t = new Date(tk.created_at).getTime();
+            if (t > end) end = t;
+          }
+        });
+      });
+    }
+    if (!end || isNaN(end) || isNaN(created)) return "";
+    const diffSec = Math.max(1, Math.round((end - created) / 1000));
+    if (diffSec < 60) return `${diffSec}s`;
+    const m = Math.floor(diffSec / 60);
+    if (m < 60) return `${m}m`;
+    const h = Math.floor(m / 60);
+    const remM = m % 60;
+    return remM ? `${h}h ${remM}m` : `${h}h`;
+  }
+
+  // =========================================================
+  // Jobs List & Gallery
+  // =========================================================
   async function loadJobs() {
     try {
       const res = await fetch("/api/jobs");
@@ -132,13 +217,43 @@
     } catch (e) {
       S.jobs = [];
     }
+    renderSidebarList();
     renderGallery();
-    renderRecent();
-    renderMenu();
   }
-  const kindLabel = (m) => (m === "short_film" ? "Short film" : "Commercial");
+
+  function renderSidebarList() {
+    const container = $("productions-list");
+    if (!S.jobs.length) {
+      container.innerHTML = `<div class="sidebar-empty" style="padding:14px 10px;color:var(--muted);font-size:12.5px">No productions yet.</div>`;
+      return;
+    }
+
+    container.innerHTML = S.jobs
+      .map((j) => {
+        const active = j.id === S.jobId ? "active" : "";
+        const title = esc(j.title || j.brief.slice(0, 42));
+        const mode = j.mode === "short_film" ? "Short film" : "Ad";
+        const date = fmtRelativeDate(j.created_at);
+        const sampleTag = j.is_sample ? `<span class="tag-sample">Sample</span>` : "";
+
+        return `
+          <button type="button" class="sidebar-job-item ${active}" data-job="${esc(j.id)}">
+            <div class="sji-top">
+              <span class="sji-title">${title}</span>
+              ${sampleTag}
+            </div>
+            <div class="sji-sub">
+              <span>${mode}</span>
+              ${date ? `<span>·</span><span>${date}</span>` : ""}
+            </div>
+          </button>
+        `;
+      })
+      .join("");
+  }
+
   function renderGallery() {
-    const samples = S.jobs.filter((j) => j.is_sample && j.final_video_url);
+    const samples = S.jobs.filter((j) => j.is_sample && j.poster_url);
     const el = $("gallery-cards");
     if (!samples.length) {
       $("sample-gallery").classList.add("hidden");
@@ -148,110 +263,156 @@
     el.innerHTML = samples
       .map(
         (j) => `
-      <button type="button" class="gcard" data-job="${esc(j.id)}">
-        <div class="gcard-media">
-          <img src="${esc(j.poster_url || "")}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">
-          <span class="gcard-kind">${kindLabel(j.mode)}</span>
-          <span class="gcard-play">${ICON.play} Open workspace</span>
-        </div>
-        <div class="gcard-body">
-          <div class="gcard-title">${esc(j.title || j.id)}</div>
-          <div class="gcard-logline">${esc(j.logline || j.brief)}</div>
-          <div class="gcard-meta">
-            <span class="pill">${fmtDur(j.duration_s)}</span>
-            <span class="pill">${j.scene_count} scenes · ${j.shot_count} shots</span>
-            <span class="pill run-static pill-sample">${j.take_count} takes reviewed by the critic</span>
+        <button type="button" class="gcard" data-job="${esc(j.id)}">
+          <div class="gcard-media">
+            <img src="${esc(j.poster_url || "")}" alt="" loading="lazy">
+            <span class="gcard-kind">${j.mode === "short_film" ? "Short film" : "Ad"}</span>
+            <span class="gcard-play">${ICON.play} Open production</span>
           </div>
-        </div>
-      </button>`
+          <div class="gcard-body">
+            <div class="gcard-title">${esc(j.title || j.id)}</div>
+            <div class="gcard-logline">${esc(j.logline || j.brief)}</div>
+            <div class="gcard-meta">
+              <span class="pill">${fmtDur(j.duration_s)}</span>
+              <span class="pill">${j.shot_count} shots</span>
+              <span class="pill pill-sample">${j.take_count} takes reviewed by the critic</span>
+            </div>
+          </div>
+        </button>`
       )
       .join("");
   }
-  function jobRow(j, cls) {
-    const thumb = j.poster_url ? `<img src="${esc(j.poster_url)}" alt="" loading="lazy">` : `<span class="menu-thumb"></span>`;
-    const st = j.is_sample ? "sample" : j.status;
-    return `<button type="button" class="${cls}" data-job="${esc(j.id)}">${thumb}<div><div class="mi-title">${esc(
-      j.title || j.brief.slice(0, 60)
-    )}</div><div class="mi-sub">${kindLabel(j.mode)} · ${esc(st)}${j.duration_s ? " · " + fmtDur(j.duration_s) : ""}</div></div></button>`;
-  }
-  function renderRecent() {
-    const recent = S.jobs.filter((j) => !j.is_sample).slice(0, 6);
-    $("recent-section").classList.toggle("hidden", !recent.length);
-    $("recent-list").innerHTML = recent.map((j) => jobRow(j, "rcard")).join("");
-  }
-  function renderMenu() {
-    $("productions-menu").innerHTML = S.jobs.length
-      ? S.jobs.slice(0, 30).map((j) => jobRow(j, "menu-item")).join("")
-      : `<div class="menu-empty">No productions yet.</div>`;
-  }
+
+  // Click delegation
   document.addEventListener("click", (e) => {
     const card = e.target.closest("[data-job]");
     if (card) {
-      $("productions-menu").classList.add("hidden");
       openJob(card.dataset.job);
       return;
     }
-    if (!e.target.closest(".menu-wrap")) $("productions-menu").classList.add("hidden");
-  });
-  $("productions-btn").addEventListener("click", (e) => {
-    e.stopPropagation();
-    $("productions-menu").classList.toggle("hidden");
+    if (e.target.id === "start-own") {
+      e.preventDefault();
+      showHome();
+      return;
+    }
+    const act = e.target.closest("[data-action]");
+    if (act) {
+      if (act.dataset.action === "open-final-cut") {
+        openFinalCut(Number(act.dataset.version) || 1);
+      } else if (act.dataset.action === "resume") {
+        resumeJob(act);
+      } else if (act.dataset.action === "toggle-shotlist") {
+        S.showPlanShotlist = !S.showPlanShotlist;
+        renderThread();
+      }
+    }
   });
 
-  // ---------- Routing ----------
+  // =========================================================
+  // Routing
+  // =========================================================
   function showHome(push = true) {
     closeStream();
+    closeFinalCut(false);
     S.job = null;
     S.jobId = null;
     if (push) history.pushState({}, "", "/");
-    $("view-workspace").classList.add("hidden");
-    $("view-home").classList.remove("hidden");
-    $("topbar-job").classList.add("hidden");
+
+    $("empty-state-view").classList.remove("hidden");
+    $("job-thread-view").classList.add("hidden");
+    $("example-chips").classList.remove("hidden");
+    $("composer-top").classList.remove("hidden");
+    $("attach-label").classList.remove("hidden");
+
+    $("chat-header-title").textContent = "Showrunner AI";
+    $("chat-header-status").classList.add("hidden");
+    $("chat-header-sample").classList.add("hidden");
+
     document.title = "Showrunner AI · Your AI film crew";
+    renderLimits();
+    renderComposer();
+    renderSidebarList();
     loadJobs();
   }
+
   $("new-production-btn").addEventListener("click", () => {
     showHome();
-    setTimeout(() => $("brief-input").focus(), 50);
+    setTimeout(() => $("composer-input").focus(), 50);
   });
+
   $("brand-link").addEventListener("click", (e) => {
     e.preventDefault();
     showHome();
   });
+
   window.addEventListener("popstate", route);
+
   function route() {
     const p = new URLSearchParams(location.search);
     const id = p.get("job");
-    if (id) openJob(id, { push: false, shot: p.get("shot"), take: p.get("take") });
+    if (id) openJob(id, { push: false });
     else showHome(false);
   }
 
-  // ---------- Home composer ----------
+  // =========================================================
+  // Composer Form
+  // =========================================================
   const PRESETS = {
-    "ad-coffee": { mode: "ad", text: "A 30-second ad for 'Kiln & Co.', a hand-thrown ceramic coffee mug. Soft morning window light, steam curling, slow tactile close-ups of glaze and hands, ending on the tagline 'Made to be held'." },
-    "ad-sneaker": { mode: "ad", text: "A 30-second night-run commercial for 'Lumen Pace', a reflective running shoe. A lone runner through rain-slick city streets, neon reflections, kinetic tracking shots, ending on the tagline 'Own the night'." },
-    "film-scifi": { mode: "short_film", text: "A 2.5-minute moody sci-fi short film, 'The Signal of Kepler-9'. Scout Maya, alone on an abandoned ice-mining colony, decodes a beacon buried under the canyons and realises it is a warning, not a greeting." },
-    "film-lighthouse": { mode: "short_film", text: "A 2.5-minute maritime drama. A solitary lighthouse keeper must improvise a beam with a hand lantern and a salvaged lens when a storm kills the main light and a trawler heads for the reef." },
+    "ad-coffee": {
+      mode: "ad",
+      text: "A 30-second ad for 'Kiln & Co.', a hand-thrown ceramic coffee mug. Soft morning window light, steam curling, slow tactile close-ups of glaze and hands, ending on the tagline 'Made to be held'.",
+    },
+    "ad-sneaker": {
+      mode: "ad",
+      text: "A 30-second night-run commercial for 'Lumen Pace', a reflective running shoe. A lone runner through rain-slick city streets, neon reflections, kinetic tracking shots, ending on the tagline 'Own the night'.",
+    },
+    "film-scifi": {
+      mode: "short_film",
+      text: "A 2.5-minute moody sci-fi short film, 'The Signal of Kepler-9'. Scout Maya, alone on an abandoned ice-mining colony, decodes a beacon buried under the canyons and realises it is a warning, not a greeting.",
+    },
+    "film-lighthouse": {
+      mode: "short_film",
+      text: "A 2.5-minute maritime drama. A solitary lighthouse keeper must improvise a beam with a hand lantern and a salvaged lens when a storm kills the main light and a trawler heads for the reef.",
+    },
   };
+
   function setMode(mode) {
     $("selected-mode").value = mode;
     document.querySelectorAll(".seg").forEach((b) => b.classList.toggle("active", b.dataset.mode === mode));
   }
   document.querySelectorAll(".seg").forEach((b) => b.addEventListener("click", () => setMode(b.dataset.mode)));
+
   document.querySelectorAll("#example-chips .chip").forEach((c) =>
     c.addEventListener("click", () => {
       const p = PRESETS[c.dataset.preset];
       if (!p) return;
-      $("brief-input").value = p.text;
+      $("composer-input").value = p.text;
       setMode(p.mode);
-      $("brief-input").focus();
+      resizeTextarea($("composer-input"));
+      $("composer-input").focus();
     })
   );
+
+  function resizeTextarea(el) {
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
+  }
+
+  $("composer-input").addEventListener("input", (e) => resizeTextarea(e.target));
+
+  $("composer-input").addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      $("composer-form").requestSubmit();
+    }
+  });
+
   $("file-input").addEventListener("change", (e) => {
     for (const f of e.target.files) if (!S.stagedFiles.some((x) => x.name === f.name)) S.stagedFiles.push(f);
     e.target.value = "";
     renderFiles();
   });
+
   function renderFiles() {
     const el = $("file-preview-list");
     el.innerHTML = "";
@@ -267,63 +428,145 @@
       el.appendChild(t);
     });
   }
-  $("brief-input").addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) $("brief-form").requestSubmit();
-  });
-  $("brief-form").addEventListener("submit", async (e) => {
+
+  $("composer-form").addEventListener("submit", async (e) => {
     e.preventDefault();
-    const brief = $("brief-input").value.trim();
-    if (!brief) return;
-    const btn = $("submit-btn");
-    btn.disabled = true;
-    btn.firstChild.textContent = "Starting… ";
-    const fd = new FormData();
-    fd.append("brief", brief);
-    fd.append("mode", $("selected-mode").value);
-    S.stagedFiles.forEach((f) => fd.append("ref_images", f));
-    try {
-      const res = await fetch("/api/jobs", { method: "POST", body: fd });
-      if (!res.ok) throw new Error(await friendlyError(res, "Could not start the production"));
-      const data = await res.json();
-      S.stagedFiles = [];
-      renderFiles();
-      $("brief-input").value = "";
-      openJob(data.id || data.job_id);
-    } catch (err) {
-      if (!$("notice-banner").classList.contains("hidden")) return;
-      showNotice(err.message);
-    } finally {
-      btn.disabled = false;
-      btn.firstChild.textContent = "Start production ";
+    const text = $("composer-input").value.trim();
+    if (!text) return;
+
+    if (!S.jobId) {
+      // ----------------- CREATE NEW JOB -----------------
+      const btn = $("composer-send");
+      btn.disabled = true;
+      const fd = new FormData();
+      fd.append("brief", text);
+      fd.append("mode", $("selected-mode").value);
+      S.stagedFiles.forEach((f) => fd.append("ref_images", f));
+      try {
+        const res = await fetch("/api/jobs", { method: "POST", body: fd });
+        if (!res.ok) throw new Error(await friendlyError(res, "Could not start the production"));
+        const data = await res.json();
+        S.stagedFiles = [];
+        renderFiles();
+        $("composer-input").value = "";
+        resizeTextarea($("composer-input"));
+        openJob(data.id || data.job_id);
+      } catch (err) {
+        if (!$("notice-banner").classList.contains("hidden")) return;
+        showNotice(err.message);
+      } finally {
+        btn.disabled = false;
+      }
+    } else {
+      // ----------------- DIRECTOR NOTE -----------------
+      const btn = $("composer-send");
+      btn.disabled = true;
+      try {
+        const res = await fetch(`/api/jobs/${S.jobId}/chat`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ message: text }),
+        });
+        if (res.status === 409) {
+          const d = await res.json().catch(() => ({}));
+          S.localNotes.push({
+            text: d.detail || "I'm still working on the current cut. Send your note once it's finished.",
+            t: new Date().toISOString(),
+          });
+          renderThread();
+          return;
+        }
+        if (!res.ok) {
+          const msg = await friendlyError(res, "Could not apply the note");
+          S.localNotes.push({ text: msg, t: new Date().toISOString() });
+          renderThread();
+          return;
+        }
+        $("composer-input").value = "";
+        resizeTextarea($("composer-input"));
+        await refresh();
+        connectStream();
+        const sc = $("chat-scroll");
+        sc.scrollTop = sc.scrollHeight;
+      } catch (err) {
+        S.localNotes.push({ text: `Could not reach the server: ${err.message}`, t: new Date().toISOString() });
+        renderThread();
+      } finally {
+        if (S.job) renderComposer();
+      }
     }
   });
 
-  // ---------- Workspace: open / refresh ----------
+  // =========================================================
+  // Job Workspace: Open / Refresh
+  // =========================================================
+  const isSample = () => S.sampleIds.has(S.jobId) || Boolean(S.job && S.job.is_sample);
+
   async function openJob(jobId, opts = {}) {
     await healthReady;
     if (opts.push !== false) {
-      const q = new URLSearchParams({ job: jobId });
-      if (opts.shot) q.set("shot", opts.shot);
-      history.pushState({}, "", `/?${q}`);
+      history.pushState({}, "", `/?job=${jobId}`);
     }
     closeStream();
+
+    const p = new URLSearchParams(location.search);
+    const expandParam = p.get("expand") === "1";
+    const cutParam = p.get("cut") === "1";
+    const shotParam = p.get("shot");
+    const takeParam = p.get("take");
+
     Object.assign(S, {
-      jobId, job: null, takes: {}, seen: new Set(), live: null, liveImages: {}, editTargets: null,
-      selectedShot: opts.shot || null, selectedTake: opts.take ? Number(opts.take) : null,
-      playerMode: opts.shot ? "shot" : "final", userPicked: Boolean(opts.shot), activeVersion: null,
-      openCards: new Set(), closedCards: new Set(), localNotes: [], firstRender: true, focusShot: opts.shot || null, briefOpen: false,
+      jobId,
+      job: null,
+      takes: {},
+      seen: new Set(),
+      live: null,
+      liveImages: {},
+      editTargets: null,
+      thinkingExpanded: expandParam,
+      userToggledThinking: expandParam,
+      showPlanShotlist: false,
+      localNotes: [],
+      firstRender: true,
+      briefOpen: false,
+      inFinalMode: false,
+      playingTake: null,
+      selectedShotId: null,
+      selectedTakeAttempt: null,
     });
-    $("view-home").classList.add("hidden");
-    $("view-workspace").classList.remove("hidden");
-    $("topbar-job").classList.remove("hidden");
+
+    $("empty-state-view").classList.add("hidden");
+    $("job-thread-view").classList.remove("hidden");
+    $("example-chips").classList.add("hidden");
+    $("composer-top").classList.add("hidden");
+    $("attach-label").classList.add("hidden");
+
+    $("chat-header-title").textContent = "Loading production…";
+    $("chat-header-status").classList.add("hidden");
+    $("chat-header-sample").classList.add("hidden");
+
+    $("brief-bubble-container").innerHTML = "";
     $("thread").innerHTML = threadSkeleton();
-    $("filmstrip").innerHTML = "";
-    $("stats").innerHTML = "";
-    resetPlayer();
-    setInspectorOpen(opts.shot ? true : inspectorPref());
-    setTab(opts.shot ? "shot" : "bible");
+
+    renderSidebarList();
     await refresh();
-    if (S.job && (BUSY.has(S.job.status) || !S.job.final_video_url)) connectStream();
+
+    if (cutParam || shotParam) {
+      const hasCut = S.job && ((S.job.versions && S.job.versions.length) || S.job.final_video_url);
+      if (hasCut) {
+        openFinalCut({
+          shot: shotParam || null,
+          take: takeParam ? Number(takeParam) : null,
+          pushState: false,
+        });
+      }
+    } else if (!isSample() && S.job && S.job.status === "completed" && ((S.job.versions && S.job.versions.length) || S.job.final_video_url)) {
+      openFinalCut({ pushState: false });
+    }
+
+    if (S.job && (BUSY.has(S.job.status) || !S.job.final_video_url)) {
+      connectStream();
+    }
     if (!S.jobs.length) loadJobs();
   }
 
@@ -335,6 +578,7 @@
     }
     S.refreshing = true;
     const id = S.jobId;
+
     try {
       const [jr, tr] = await Promise.all([fetch(`/api/jobs/${id}`), fetch(`/api/jobs/${id}/takes`)]);
       if (id !== S.jobId) return;
@@ -347,7 +591,7 @@
       const takes = tr.ok ? await tr.json() : { shots: [] };
       S.takes = {};
       (takes.shots || []).forEach((s) => (S.takes[s.shot_id] = s));
-      renderAll();
+      renderJob();
     } catch (e) {
       console.error(e);
     } finally {
@@ -358,37 +602,42 @@
       }
     }
   }
+
   let refreshTimer = null;
   function scheduleRefresh(ms = 700) {
     clearTimeout(refreshTimer);
     refreshTimer = setTimeout(refresh, ms);
   }
 
-  // ---------- SSE ----------
+  // =========================================================
+  // SSE & Live Updates
+  // =========================================================
   function closeStream() {
     if (S.es) S.es.close();
     S.es = null;
     clearInterval(S.pollTimer);
     S.pollTimer = null;
   }
+
   function connectStream() {
     if (!S.jobId) return;
     if (S.es) S.es.close();
+
     const es = new EventSource(`/api/jobs/${S.jobId}/events`);
     S.es = es;
+
     es.addEventListener("agent_event", (e) => {
       let ev;
       try { ev = JSON.parse(e.data); } catch (err) { return; }
-      // The server replays history on every (re)connect: skip events already handled.
       if (ev.id) {
         if (S.seen.has(ev.id)) return;
         S.seen.add(ev.id);
       }
       onEvent(ev);
     });
+
     es.onerror = () => {
-      // EventSource reconnects by itself; poll meanwhile so the UI never stalls.
-      if (!S.pollTimer)
+      if (!S.pollTimer) {
         S.pollTimer = setInterval(() => {
           if (!S.job || !BUSY.has(S.job.status)) {
             clearInterval(S.pollTimer);
@@ -397,14 +646,15 @@
           }
           refresh();
         }, 5000);
+      }
     };
   }
-  // Safety net: while the job is busy, keep a stream open and poll as a fallback.
+
   function ensureWatching() {
     if (!S.job) return;
     const busy = BUSY.has(S.job.status);
     if (busy && !S.es) connectStream();
-    if (busy && !S.pollTimer)
+    if (busy && !S.pollTimer) {
       S.pollTimer = setInterval(() => {
         if (!S.job || !BUSY.has(S.job.status)) {
           clearInterval(S.pollTimer);
@@ -412,13 +662,15 @@
           return;
         }
         refresh();
-      }, 6000);
+      }, 5000);
+    }
     if (!busy) {
       if (S.pollTimer) clearInterval(S.pollTimer);
       S.pollTimer = null;
       S.live = null;
     }
   }
+
   function onEvent(ev) {
     const d = ev.data || {};
     S.live = ev;
@@ -427,21 +679,143 @@
     if (ev.step === "DONE" || ev.step === "ERROR") {
       S.live = null;
       S.editTargets = null;
-      S.activeVersion = null;
-      S.playerMode = S.userPicked ? S.playerMode : "final";
-      refresh();
+      refresh().then(() => {
+        if (ev.step === "DONE" && S.job && (S.job.final_video_url || (S.job.versions && S.job.versions.length))) {
+          const v = S.job.versions && S.job.versions.length ? S.job.versions[S.job.versions.length - 1].version : 1;
+          if (!S.inFinalMode) {
+            openFinalCut({ version: v });
+          } else {
+            S.activeVersion = v;
+            renderFinalPanel();
+          }
+        }
+      });
       loadJobs();
       if (S.es) S.es.close();
       S.es = null;
       return;
     }
-    renderLive();
-    scheduleRefresh(ev.step === "PLAN" && d.plan ? 50 : 800);
+    scheduleRefresh(ev.step === "PLAN" && d.plan ? 50 : 700);
   }
 
-  // ---------- Derived helpers ----------
-  const isSample = () => S.sampleIds.has(S.jobId);
+  // =========================================================
+  // Render: Job Route
+  // =========================================================
+  function renderJob() {
+    const job = S.job;
+    if (!job) return;
+
+    // Header
+    const title = (job.plan && job.plan.title) || job.brief.slice(0, 48) || "Untitled production";
+    $("chat-header-title").textContent = title;
+    document.title = `${title} · Showrunner AI`;
+
+    const st = $("chat-header-status");
+    const busy = BUSY.has(job.status);
+    st.textContent = busy ? job.status : job.status === "completed" ? "completed" : job.status;
+    st.className = `pill ${busy ? "run" : job.status === "completed" ? "ok" : job.status === "failed" ? "bad" : ""}`;
+    st.classList.remove("hidden");
+
+    $("chat-header-sample").classList.toggle("hidden", !isSample());
+
+    // Auto-expand thinking block if busy, unless user explicitly toggled it
+    if (!S.userToggledThinking) {
+      S.thinkingExpanded = busy;
+    }
+
+    renderBriefBubble();
+    renderThread();
+    renderComposer();
+    renderSidebarList();
+    if (S.inFinalMode) {
+      renderFinalPanel();
+    }
+
+    S.firstRender = false;
+    ensureWatching();
+  }
+
+  function renderBriefBubble() {
+    const job = S.job;
+    if (!job) return;
+
+    const refs = (job.reference_images || []).map((u) => `<img src="${esc(u)}" alt="" loading="lazy">`).join("");
+    const isLong = (job.brief || "").length > 320;
+    const clampClass = isLong && !S.briefOpen ? "clamp" : "";
+    const modeLabel = job.mode === "short_film" ? "Short film" : "Ad";
+
+    $("brief-bubble-container").innerHTML = `
+      <div class="brief-bubble">
+        <div class="brief-avatar">You</div>
+        <div class="brief-content">
+          <div class="brief-head">
+            <span class="brief-who">User Brief</span>
+            <span class="brief-meta">${esc(fmtTime(job.created_at))} · ${modeLabel}</span>
+          </div>
+          <div class="brief-text ${clampClass}">${esc(job.brief)}</div>
+          ${isLong ? `<button type="button" class="brief-toggle-btn" id="brief-toggle-btn">${S.briefOpen ? "Show less" : "Show full brief"}</button>` : ""}
+          ${refs ? `<div class="brief-refs">${refs}</div>` : ""}
+        </div>
+      </div>
+    `;
+
+    const toggle = $("brief-toggle-btn");
+    if (toggle) {
+      toggle.onclick = () => {
+        S.briefOpen = !S.briefOpen;
+        renderBriefBubble();
+      };
+    }
+  }
+
+  function renderComposer() {
+    const input = $("composer-input");
+    const send = $("composer-send");
+    const note = $("composer-note");
+    const form = $("composer-form");
+
+    if (!S.jobId) {
+      // Home empty state
+      form.classList.remove("disabled");
+      input.disabled = false;
+      send.disabled = false;
+      input.placeholder = "Describe your film. e.g. “A 30-second ad for a hand-thrown ceramic coffee mug, morning light, slow and tactile…”";
+      renderLimits();
+      return;
+    }
+
+    // Job route
+    const job = S.job;
+    if (!job) return;
+
+    const sample = isSample();
+    const busy = BUSY.has(job.status);
+    const unfinished = job.status === "failed" && !job.final_video_url;
+
+    input.disabled = sample || busy || unfinished;
+    send.disabled = sample || busy || unfinished;
+    form.classList.toggle("disabled", sample || busy || unfinished);
+
+    if (sample) {
+      input.placeholder = "Sample productions are read-only";
+      note.innerHTML = `This is a finished sample, kept read-only. <a href="/" id="start-own">Start your own production →</a>`;
+    } else if (busy) {
+      input.placeholder = "The director agent is working…";
+      note.textContent = "You can direct changes once this cut is finished.";
+    } else if (unfinished) {
+      input.placeholder = "Resume the production first";
+      note.textContent = "This production stopped before the first cut. Resume it above.";
+    } else {
+      input.placeholder = "Direct a change… e.g. “Make scene 2 warmer”";
+      note.textContent = "The agent re-shoots only the shots your note affects and cuts a new version.";
+    }
+  }
+
+  // =========================================================
+  // Thread & Thinking Block
+  // =========================================================
   const allShots = () => (S.job && S.job.plan ? S.job.plan.scenes.flatMap((sc) => sc.shots) : []);
+
   function shotState(shot) {
     const t = S.takes[shot.id] || {};
     const n = (t.takes || shot.attempts || []).length;
@@ -452,21 +826,24 @@
       case "retrying": return { cls: "run", label: "reshooting", pill: "run" };
       case "failed": return { cls: "bad", label: "failed", pill: "bad" };
       default:
-        if (shot.is_flagged_fallback) return { cls: "flag", label: n > 1 ? `best of ${n}` : "accepted (flagged)", pill: "warn" };
+        if (shot.is_flagged_fallback) return { cls: "flag", label: n > 1 ? `best of ${n} · flagged` : "accepted (flagged)", pill: "warn" };
         return { cls: "pass", label: n > 1 ? `passed on take ${t.accepted_attempt || n}` : "passed", pill: "ok" };
     }
   }
+
   function acceptedTake(shotId) {
     const t = S.takes[shotId];
     if (!t || !t.takes) return null;
     return t.takes.find((x) => x.accepted) || null;
   }
+
   function shotThumb(shot) {
     const t = S.takes[shot.id];
     const acc = acceptedTake(shot.id);
     return (acc && acc.image_url) || (t && t.image_url) || S.liveImages[shot.id] ||
       (t && t.takes && t.takes.length ? t.takes[t.takes.length - 1].image_url : null) || (t && t.first_frame_url) || null;
   }
+
   function loopStats() {
     const shots = allShots();
     let takes = 0, reshoots = 0, firstPass = 0, flagged = 0, scoreSum = 0, scoreN = 0, done = 0;
@@ -487,341 +864,608 @@
     return { shots: shots.length, takes, reshoots, firstPass, flagged, done, avg: scoreN ? scoreSum / scoreN : null, runtime };
   }
 
-  // ---------- Render: everything ----------
-  function renderAll() {
-    const job = S.job;
-    if (!job) return;
-    const title = (job.plan && job.plan.title) || "New production";
-    $("topbar-title").textContent = title;
-    document.title = `${title} · Showrunner AI`;
-    const st = $("topbar-status");
-    const busy = BUSY.has(job.status);
-    st.textContent = busy ? job.status : job.status === "completed" ? "completed" : job.status;
-    st.className = `pill ${busy ? "run" : job.status === "completed" ? "ok" : job.status === "failed" ? "bad" : ""}`;
-    $("topbar-sample").classList.toggle("hidden", !isSample());
-    renderThread();
-    renderStage();
-    renderInspector();
-    renderDirector();
-    S.firstRender = false;
-    ensureWatching();
-  }
-
-  // ---------- Thread ----------
   function threadSkeleton() {
-    return `<div class="msg"><span class="avatar avatar-agent">${ICON.play}</span><div class="msg-body">
-      <div class="skel skel-line w40"></div><div class="skel skel-line w90"></div><div class="skel skel-line w75"></div></div></div>
-      <div class="msg"><span class="avatar avatar-agent">${ICON.play}</span><div class="msg-body"><div class="skel" style="height:120px;border-radius:12px"></div></div></div>`;
-  }
-  const agentMsg = (key, html, time, extraCls = "") => ({
-    key,
-    html: `<span class="avatar avatar-agent">${ICON.play}</span><div class="msg-body"><div class="msg-meta"><span class="msg-who">Director agent</span><span class="msg-time">${esc(fmtTime(time))}</span></div>${html}</div>`,
-    cls: `msg ${extraCls}`,
-  });
-  const indentMsg = (key, html, cls = "") => ({ key, html: `<div class="msg-body">${html}</div>`, cls: `msg msg-indent ${cls}` });
-  function toolCard({ id, icon, title, tool, pill, summary, body, defaultOpen, extraCls = "" }) {
-    const open = S.openCards.has(id) || (defaultOpen && !S.closedCards.has(id));
-    return `<div class="card ${open ? "open" : ""} ${extraCls}" data-card="${esc(id)}">
-      <div class="card-head ${body ? "clickable" : ""}" ${body ? `data-toggle="${esc(id)}"` : ""}>
-        <span class="card-icon">${icon}</span>
-        <span class="card-title"><span class="ct-main">${title}</span>${tool ? `<span class="tool">${esc(tool)}</span>` : ""}</span>
-        ${pill || ""}${body ? ICON.chev : ""}
-      </div>
-      ${summary ? `<div class="card-summary">${summary}</div>` : ""}
-      ${body ? `<div class="card-body collapsible">${body}</div>` : ""}
-    </div>`;
+    return `
+      <div class="msg"><span class="avatar avatar-agent">${ICON.play}</span><div class="msg-body">
+        <div class="skel skel-line w40"></div><div class="skel skel-line w90"></div><div class="skel skel-line w75"></div></div></div>
+      <div class="msg"><span class="avatar avatar-agent">${ICON.play}</span><div class="msg-body"><div class="skel" style="height:110px;border-radius:12px"></div></div></div>`;
   }
 
-  function buildThread() {
-    const job = S.job;
-    const items = [];
-    const refs = (job.reference_images || []).map((u) => `<img src="${esc(u)}" alt="">`).join("");
-    items.push({
-      key: "brief",
-      cls: "msg msg-user",
-      html: `<span class="avatar avatar-user">You</span><div class="msg-body"><div class="msg-meta"><span class="msg-who">Brief</span><span class="msg-time">${esc(
-        fmtTime(job.created_at)
-      )} · ${job.mode === "short_film" ? "Short film" : "Ad"}</span></div><div class="msg-text"><div class="brief-text ${job.brief.length > 320 && !S.briefOpen ? "clamp" : ""}">${esc(job.brief)}</div>${
-        job.brief.length > 320 ? `<button type="button" class="link-btn" data-action="brief">${S.briefOpen ? "Show less" : "Show full brief"}</button>` : ""
-      }${refs ? `<div class="ref-row">${refs}</div>` : ""}</div></div>`,
-    });
-    items.push(
-      agentMsg(
-        "intro",
-        `<div class="msg-text">On it. I'll write the plan, lock a visual bible, then render every shot with Veo and have the Gemini critic review each take, reshooting anything that misses the brief.</div>`,
-        job.created_at
-      )
+  function liveText() {
+    if (S.live) return S.live.message;
+    const j = S.job;
+    return (
+      {
+        queued: "Queued…",
+        planning: "Writing the script & shot plan…",
+        planned: "Plan approved, locking visual bible…",
+        generating: "Rendering keyframes with Veo 3.1…",
+        critiquing: "Critic reviewing takes…",
+        assembling: "Assembling final cut…",
+      }[j.status] || "Working…"
     );
+  }
 
+  // Build the vertical timeline content inside the thinking block
+  function buildTimelineContent() {
+    const job = S.job;
     const plan = job.plan;
     if (!plan) {
-      if (job.status === "failed") items.push(errorItem());
-      else
-        items.push(
-          indentMsg(
-            "plan-skel",
-            toolCard({ id: "plan-skel", icon: ICON.plan, title: "Planning the production", tool: "gemini · planner", pill: '<span class="pill run">thinking</span>', summary: '<div class="skel skel-line w90"></div><div class="skel skel-line w75"></div><div class="skel skel-line w60"></div>' })
-          )
-        );
-      return items;
+      return `
+        <div class="timeline-step active" data-step="plan">
+          <span class="step-dot"></span>
+          <div class="step-card">
+            <div class="sc-head"><div class="sc-head-left"><span class="sc-icon">${ICON.plan}</span><span>Writing the plan</span></div><span class="pill run">thinking</span></div>
+            <div class="sc-body"><div class="skel skel-line w90"></div><div class="skel skel-line w60"></div></div>
+          </div>
+        </div>
+      `;
     }
 
     const shots = allShots();
     const runtime = shots.reduce((a, s) => a + s.duration_s, 0);
-    const planBody = plan.scenes
-      .map(
-        (sc) => `<div class="plan-scene"><div class="plan-scene-title"><span>Scene ${sc.scene_number}</span>${esc(sc.title)}</div>
-        ${sc.shots
-          .map((s) => `<div class="plan-shot"><span class="ps-id">${esc(shortId(s.id))}</span><span class="ps-dur">${fmtDur(s.duration_s)}</span><span>${esc(s.description)}</span></div>`)
-          .join("")}</div>`
-      )
-      .join("");
-    items.push(
-      indentMsg(
-        "plan",
-        toolCard({
-          id: "plan",
-          icon: ICON.plan,
-          title: "Planned the production",
-          tool: "gemini-3.8-flash",
-          pill: '<span class="pill ok">done</span>',
-          summary: `<div class="plan-title">${esc(plan.title)}</div><div class="plan-logline">${esc(plan.logline)}</div>
-            <div class="meta-row"><span class="pill">${plan.scenes.length} scenes</span><span class="pill">${shots.length} shots</span><span class="pill">${fmtDur(runtime)} runtime</span><span class="pill pill-link" data-toggle="plan">shot list ▸</span></div>`,
-          body: planBody,
-          defaultOpen: shots.length <= 6,
-        })
-      )
-    );
-
     const bible = plan.bible || {};
     const style = bible.style || {};
-    const refCards = [
-      ...(bible.characters || []).map((c) => ({ name: c.name, kind: "Character", url: (job.character_refs || {})[c.name] || c.reference_image })),
-      ...(bible.products || []).map((p) => ({ name: p.name, kind: "Product", url: (job.product_refs || {})[p.name] || p.reference_image })),
-    ];
-    const refsHtml = refCards.length
-      ? `<div class="refs">${refCards
-          .map((r) => `<div class="ref">${r.url ? `<img src="${esc(r.url)}" alt="" loading="lazy">` : '<div class="skel skel-media" style="aspect-ratio:1"></div>'}<div>${esc(r.name)}<small>${r.kind} sheet</small></div></div>`)
-          .join("")}</div>`
+    const st = loopStats();
+    const busy = BUSY.has(job.status);
+
+    // a. Plan Step
+    const planShotlistHtml = S.showPlanShotlist
+      ? `<div class="plan-shotlist">
+          ${plan.scenes
+            .map(
+              (sc) => `
+            <div class="plan-scene-group">
+              <div class="psg-title"><span>Scene ${sc.scene_number}</span> ${esc(sc.title)}</div>
+              ${sc.shots
+                .map((s) => `<div class="psg-shot"><span class="ps-id">${esc(shortId(s.id))}</span><span class="ps-dur">${fmtDur(s.duration_s)}</span><span>${esc(s.description)}</span></div>`)
+                .join("")}
+            </div>`
+            )
+            .join("")}
+        </div>`
       : "";
-    items.push(
-      indentMsg(
-        "bible",
-        toolCard({
-          id: "bible",
-          icon: ICON.bible,
-          title: "Locked the visual bible",
-          tool: "nano-banana",
-          pill: refCards.some((r) => !r.url) && BUSY.has(job.status) ? '<span class="pill run">drawing</span>' : '<span class="pill ok">done</span>',
-          summary: `<div class="palette">${(style.palette || []).map((c) => `<span class="swatch" style="background:${esc(c)}" title="${esc(c)}"></span>`).join("")}</div>
-            <div class="kv"><b>Mood</b> · ${esc(style.mood || "")}</div>${refsHtml}`,
-          body: `<div class="kv"><b>Lighting</b> · ${esc(style.lighting || "")}</div><div class="kv"><b>Lens</b> · ${esc(style.lens || "")}</div>`,
-        })
-      )
-    );
 
-    items.push(
-      agentMsg(
-        "render-intro",
-        `<div class="msg-text">Rendering ${shots.length} shots with Veo 3.1. Each take goes to the critic; a score under 0.70 gets a corrected prompt and a reshoot. Consecutive shots chain last frame → first frame for continuity.</div>`,
-        (shots.find((s) => (s.attempts || []).length) || {}).attempts?.[0]?.created_at
-      )
-    );
+    const planStep = `
+      <div class="timeline-step done" data-step="plan">
+        <span class="step-dot"></span>
+        <div class="step-card">
+          <div class="sc-head">
+            <div class="sc-head-left"><span class="sc-icon">${ICON.plan}</span><span>Plan</span><span class="sc-model-tag">gemini-3.8-flash</span></div>
+            <span class="pill ok">done</span>
+          </div>
+          <div class="sc-body">
+            <div class="plan-hero-title">${esc(plan.title)}</div>
+            <div class="plan-hero-logline">${esc(plan.logline)}</div>
+            <div class="plan-pills-row">
+              <span class="pill">${plan.scenes.length} scenes</span>
+              <span class="pill">${shots.length} shots</span>
+              <span class="pill">${fmtDur(runtime)} runtime</span>
+              <button type="button" class="plan-shotlist-toggle" data-action="toggle-shotlist">
+                ${S.showPlanShotlist ? "Hide shot list ▴" : "Shot list ▸"}
+              </button>
+            </div>
+            ${planShotlistHtml}
+          </div>
+        </div>
+      </div>
+    `;
 
-    plan.scenes.forEach((sc) => {
-      items.push({ key: `scene-${sc.id}`, cls: "scene-divider", html: `<span class="sn">Scene ${sc.scene_number}</span>${esc(sc.title)}` });
-      sc.shots.forEach((shot) => items.push(indentMsg(`shot-${shot.id}`, shotCard(shot))));
+    // b. Style Bible Step
+    const palette = style.palette || [];
+    const swatchesHtml = palette.length
+      ? `<div class="bible-palette">
+          ${palette
+            .map(
+              (hex) => `
+            <div class="palette-swatch-box" title="${esc(hex)}">
+              <span class="palette-swatch-color" style="background:${esc(hex)}"></span>
+              <span class="palette-swatch-hex">${esc(hex)}</span>
+            </div>`
+            )
+            .join("")}
+        </div>`
+      : "";
+
+    const refCards = [
+      ...(bible.characters || []).map((c) => ({
+        name: c.name,
+        kind: "Character",
+        desc: c.appearance,
+        url: (job.character_refs || {})[c.name] || c.reference_image,
+      })),
+      ...(bible.products || []).map((p) => ({
+        name: p.name,
+        kind: "Product",
+        desc: p.description,
+        url: (job.product_refs || {})[p.name] || p.reference_image,
+      })),
+    ];
+
+    const refsHtml = refCards.length
+      ? `<div class="bible-refs-grid">
+          ${refCards
+            .map(
+              (r) => `
+            <div class="bible-ref-card">
+              ${r.url ? `<img src="${esc(r.url)}" alt="" loading="lazy">` : '<div class="skel" style="width:44px;height:44px;border-radius:6px;flex:none"></div>'}
+              <div class="bible-ref-info">
+                <div class="bible-ref-name">${esc(r.name)} <span class="tag-sample" style="font-size:10px">${esc(r.kind)}</span></div>
+                <div class="bible-ref-desc">${esc(r.desc || "")}</div>
+              </div>
+            </div>`
+            )
+            .join("")}
+        </div>`
+      : "";
+
+    const bibleStep = `
+      <div class="timeline-step done" data-step="bible">
+        <span class="step-dot"></span>
+        <div class="step-card">
+          <div class="sc-head">
+            <div class="sc-head-left"><span class="sc-icon">${ICON.bible}</span><span>Style bible</span><span class="sc-model-tag">nano-banana</span></div>
+            <span class="pill ok">done</span>
+          </div>
+          <div class="sc-body">
+            ${swatchesHtml}
+            <div class="bible-spec-grid">
+              <div class="bible-spec-item"><b>Mood:</b> <span>${esc(style.mood || "–")}</span></div>
+              <div class="bible-spec-item"><b>Lighting:</b> <span>${esc(style.lighting || "–")}</span></div>
+              <div class="bible-spec-item"><b>Lens:</b> <span>${esc(style.lens || "–")}</span></div>
+            </div>
+            ${refsHtml}
+          </div>
+        </div>
+      </div>
+    `;
+
+    // c. Scenes & Shots
+    const scenesHtml = plan.scenes
+      .map((sc) => {
+        const shotsHtml = sc.shots
+          .map((shot) => {
+            const t = S.takes[shot.id] || { takes: [] };
+            const takes = t.takes || [];
+            const st = shotState(shot);
+            const thumb = shotThumb(shot);
+            const acc = takes.find((x) => x.accepted);
+            const running = st.cls === "run";
+            const headScore = acc && acc.critique ? scoreHtml(acc.critique.score) : "";
+
+            const showFlow = takes.length > 1 || shot.is_flagged_fallback || running || (takes.length === 1 && !acc);
+
+            let flowHtml = "";
+            if (showFlow) {
+              flowHtml = takes
+                .map((tk, i) => {
+                  const c = tk.critique;
+                  const verdict = tk.accepted
+                    ? c && c.passed
+                      ? `<span class="pill ok">accepted</span>`
+                      : `<span class="pill warn">best of ${takes.length} · flagged</span>`
+                    : c && !c.passed
+                    ? `<span class="pill bad">rejected</span>`
+                    : c
+                    ? `<span class="pill">passed</span>`
+                    : `<span class="pill run">reviewing</span>`;
+
+                  const reasonsList =
+                    c && c.reasons && c.reasons.length
+                      ? `<div class="take-reason-text">${reasonHtml(c.reasons[0])}</div>`
+                      : "";
+
+                  const next = takes[i + 1];
+                  const correction =
+                    c && !c.passed && (next || running)
+                      ? `<div class="correction-box"><b>Correction applied →</b> <span>${esc(
+                          c.suggested_prompt_fix || "Prompt revised from critic notes."
+                        )}</span></div>`
+                      : "";
+
+                  return `
+                    <div class="take-entry ${tk.accepted ? "" : "rejected"}">
+                      <button type="button" class="take-thumb-chip" data-shot="${esc(shot.id)}" data-take="${tk.attempt}" title="Inspect Take ${tk.attempt}">
+                        ${tk.image_url ? `<img src="${esc(tk.image_url)}" alt="" loading="lazy">` : '<div class="skel" style="width:100%;height:100%"></div>'}
+                        <span class="play-overlay">${ICON.play}</span>
+                      </button>
+                      <div class="take-info-col">
+                        <div class="take-headline">
+                          <span>Take ${tk.attempt}</span>
+                          ${c ? scoreHtml(c.score) : ""}
+                          ${verdict}
+                        </div>
+                        ${reasonsList}
+                      </div>
+                    </div>
+                    ${correction}
+                  `;
+                })
+                .join("");
+
+              if (running) {
+                const img = S.liveImages[shot.id];
+                flowHtml += `
+                  <div class="take-entry running">
+                    <div class="take-thumb-chip">
+                      ${img ? `<img src="${esc(img)}" alt="">` : '<div class="skel" style="width:100%;height:100%"></div>'}
+                    </div>
+                    <div class="take-info-col">
+                      <div class="take-headline">
+                        <span>Take ${takes.length + 1}</span>
+                        <span class="pill run">${esc(st.label)}</span>
+                      </div>
+                      <div class="take-reason-text">Veo 3.1 is rendering this take; critic reviews next.</div>
+                    </div>
+                  </div>
+                `;
+              }
+            }
+
+            return `
+              <div class="shot-row-card" data-shot-card="${esc(shot.id)}">
+                <div class="shot-row-head">
+                  <button type="button" class="shot-thumb-btn" data-shot="${esc(shot.id)}" data-take="${acc ? acc.attempt : 1}" title="View take media">
+                    ${thumb ? `<img src="${esc(thumb)}" alt="" loading="lazy">` : '<div class="skel" style="width:100%;height:100%"></div>'}
+                    <span class="play-overlay">${ICON.play}</span>
+                  </button>
+                  <div class="shot-meta-col">
+                    <div class="shot-top-line">
+                      <span class="shot-id-tag">${esc(shortId(shot.id))}</span>
+                      <span class="shot-desc-text">${esc(shot.description)}</span>
+                    </div>
+                    <div class="shot-sub-line">
+                      <span class="sdot ${st.cls}"></span>
+                      <span class="shot-status-text">${esc(st.label)}</span>
+                      <span>·</span>
+                      <span class="shot-dur-text">${fmtDur(shot.duration_s)}</span>
+                      <span>·</span>
+                      <span class="shot-camera-text">${esc(shot.camera)}</span>
+                    </div>
+                  </div>
+                  ${headScore}
+                </div>
+                ${showFlow ? `<div class="take-flow">${flowHtml}</div>` : ""}
+              </div>
+            `;
+          })
+          .join("");
+
+        return `
+          <div class="scene-section">
+            <div class="scene-heading">
+              <span class="scene-badge">Scene ${sc.scene_number}</span>
+              <span class="scene-title">${esc(sc.title)}</span>
+            </div>
+            ${shotsHtml}
+          </div>
+        `;
+      })
+      .join("");
+
+    const scenesStep = `
+      <div class="timeline-step done" data-step="scenes">
+        <span class="step-dot"></span>
+        <div class="step-card">
+          <div class="sc-head">
+            <div class="sc-head-left"><span class="sc-icon">${ICON.film}</span><span>Scenes &amp; Shot Generations</span><span class="sc-model-tag">veo-3.1 &amp; gemini-critic</span></div>
+            <span class="pill ${st.done === st.shots ? "ok" : "run"}">${st.done === st.shots ? "completed" : `${st.done}/${st.shots} shots`}</span>
+          </div>
+          <div class="sc-body">
+            ${scenesHtml}
+          </div>
+        </div>
+      </div>
+    `;
+
+    // d. Critic loop summary
+    let criticStep = "";
+    if (st.takes && st.done === st.shots) {
+      criticStep = `
+        <div class="timeline-step done" data-step="critic">
+          <span class="step-dot"></span>
+          <div class="step-card">
+            <div class="sc-head">
+              <div class="sc-head-left"><span class="sc-icon">${ICON.critic}</span><span>Critic loop summary</span><span class="sc-model-tag">gemini-3.8-flash</span></div>
+              <span class="pill ok">verified</span>
+            </div>
+            <div class="sc-body">
+              <div class="cs-grid">
+                <div class="cs-stat"><b>${st.takes}</b><span>takes reviewed</span></div>
+                <div class="cs-stat"><b>${st.reshoots}</b><span>critic reshoots</span></div>
+                <div class="cs-stat"><b>${st.firstPass}</b><span>passed first try</span></div>
+                <div class="cs-stat"><b>${st.avg != null ? st.avg.toFixed(2) : "–"}</b><span>avg accepted score</span></div>
+              </div>
+              ${st.flagged ? `<div class="cs-flagged-note">⚠️ ${st.flagged} shot(s) never cleared 0.70; kept best take and flagged.</div>` : ""}
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    // e. Voiceover & music
+    let audioStep = "";
+    if (job.soundtrack_url || shots.some((s) => s.vo_line)) {
+      const voCount = shots.filter((s) => s.vo_line).length;
+      const ready = Boolean(job.soundtrack_url);
+      audioStep = `
+        <div class="timeline-step ${ready ? "done" : "active"}" data-step="audio">
+          <span class="step-dot"></span>
+          <div class="step-card">
+            <div class="sc-head">
+              <div class="sc-head-left"><span class="sc-icon">${ICON.music}</span><span>${ready ? "Scored soundtrack & voiced narration" : "Scoring & voicing"}</span><span class="sc-model-tag">lyria-3 &amp; gemini-tts</span></div>
+              <span class="pill ${ready ? "ok" : "run"}">${ready ? "done" : "queued"}</span>
+            </div>
+            <div class="sc-body">
+              <div class="as-body">
+                <div class="as-info">${voCount} voiceover line${voCount === 1 ? "" : "s"} · Mood: ${esc(style.mood || "–")}</div>
+                ${ready ? `<div class="as-player"><audio controls preload="none" src="${esc(job.soundtrack_url)}"></audio></div>` : ""}
+              </div>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    // f. Assembly
+    let assemblyStep = "";
+    const v1 = (job.versions || [])[0];
+    if (v1 || job.status === "completed") {
+      assemblyStep = `
+        <div class="timeline-step done" data-step="assembly">
+          <span class="step-dot"></span>
+          <div class="step-card">
+            <div class="sc-head">
+              <div class="sc-head-left"><span class="sc-icon">${ICON.cut}</span><span>Assembled the master cut</span><span class="sc-model-tag">ffmpeg</span></div>
+              <span class="pill ok">v1 ready</span>
+            </div>
+            <div class="sc-body">
+              <div class="asm-body">
+                <span>${fmtDur(runtime)} runtime</span> · <span>${shots.length} clips</span> · <span>Captions burned in</span> · <span>VO ducked over score</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    return planStep + bibleStep + scenesStep + criticStep + audioStep + assemblyStep;
+  }
+
+  function buildThread() {
+    const job = S.job;
+    if (!job) return [];
+    const items = [];
+    const busy = BUSY.has(job.status);
+    const shots = allShots();
+    const st = loopStats();
+
+    // 1. Agent intro
+    items.push({
+      key: "intro",
+      cls: "msg msg-agent",
+      html: `
+        <span class="avatar avatar-agent">${ICON.play}</span>
+        <div class="msg-body">
+          <div class="msg-meta">
+            <span class="msg-who">Director agent</span>
+            <span class="msg-time">${esc(fmtTime(job.created_at))}</span>
+          </div>
+          <div class="msg-text">
+            I'm on it. I'll write the script &amp; shot blueprint, establish the visual bible, animate keyframes with Veo 3.1, and have the Gemini critic review and reshoot takes until approved.
+          </div>
+        </div>
+      `,
     });
 
-    const st = loopStats();
-    if (st.takes && st.done === st.shots) {
-      items.push(
-        indentMsg(
-          "critic-summary",
-          toolCard({
-            id: "critic-summary",
-            icon: ICON.critic,
-            title: "Critic loop summary",
-            tool: "gemini-3.8-flash · critic",
-            summary: `<div class="summary-grid">
-              <div><b>${st.takes}</b><span>takes reviewed</span></div>
-              <div><b>${st.reshoots}</b><span>reshoots</span></div>
-              <div><b>${st.firstPass}</b><span>passed first try</span></div>
-              <div><b>${st.avg != null ? st.avg.toFixed(2) : "–"}</b><span>avg accepted score</span></div></div>
-              ${st.flagged ? `<div class="kv" style="margin-top:8px">${st.flagged} shot(s) never cleared 0.70, so I kept the best take and flagged it.</div>` : ""}`,
-          })
-        )
-      );
+    // 2. The Thinking Block
+    let headerStatusHtml = "";
+    if (busy) {
+      headerStatusHtml = `
+        <span class="tb-status-icon"><span class="spinner"></span></span>
+        <span class="tb-title">Director is working… ${esc(liveText())}</span>
+      `;
+    } else {
+      const elapsed = getElapsedTime(job);
+      const reshoots = Math.max(0, st.takes - shots.length);
+      headerStatusHtml = `
+        <span class="tb-status-icon"><span class="check-icon">${ICON.check}</span></span>
+        <span class="tb-title">Worked for ${elapsed || "a few minutes"} · ${shots.length || (job.plan && job.plan.scenes ? allShots().length : "–")} shots · ${st.takes} takes · ${reshoots} reshoots</span>
+      `;
     }
 
-    if (job.soundtrack_url || shots.some((s) => s.vo_line)) {
-      const vo = shots.filter((s) => s.vo_line).length;
-      const ready = Boolean(job.soundtrack_url);
-      items.push(
-        indentMsg(
-          "audio",
-          toolCard({
-            id: "audio",
-            icon: ICON.music,
-            title: ready ? "Scored the soundtrack & voiced the narration" : "Scoring & voicing",
-            tool: "lyria-3 · gemini-tts",
-            pill: ready ? '<span class="pill ok">done</span>' : '<span class="pill">queued</span>',
-            summary: `${vo} voiceover line${vo === 1 ? "" : "s"} · mood: ${esc(style.mood || "")}${ready ? `<audio controls preload="none" src="${esc(job.soundtrack_url)}"></audio>` : ""}`,
-          })
-        )
-      );
-    }
+    const openClass = S.thinkingExpanded ? "open" : "";
+    const thinkingBlockHtml = `
+      <div class="thinking-block ${openClass}" id="thinking-block">
+        <div class="tb-header" id="tb-header">
+          <div class="tb-header-left">${headerStatusHtml}</div>
+          <div class="tb-chevron">${ICON.chev}</div>
+        </div>
+        <div class="tb-body" id="tb-body">
+          <div class="timeline">
+            ${buildTimelineContent()}
+          </div>
+        </div>
+      </div>
+    `;
 
+    items.push({
+      key: "thinking",
+      cls: "msg msg-indent",
+      html: thinkingBlockHtml,
+    });
+
+    // 3. Final Cut Card (when version 1 exists)
     const v1 = (job.versions || [])[0];
-    if (v1) {
-      items.push(
-        indentMsg(
-          "done",
-          toolCard({
-            id: "done",
-            icon: ICON.cut,
-            title: "Assembled the master cut",
-            tool: "ffmpeg",
-            pill: '<span class="pill ok">v1 ready</span>',
-            summary: `${fmtDur(runtime)} · ${shots.length} clips · captions burned in · VO ducked over the score
-              <div class="done-poster" data-play-version="1"><img src="${esc(v1.poster_url || job.poster_url || "")}" alt=""><span class="gcard-play">${ICON.play} Watch the film</span></div>`,
-          })
-        )
-      );
+    if (v1 && (v1.url || job.final_video_url)) {
+      const poster = v1.poster_url || job.poster_url || "";
+      const runtime = shots.reduce((a, s) => a + s.duration_s, 0);
+      const title = (job.plan && job.plan.title) || "Master cut";
+
+      items.push({
+        key: "final-cut",
+        cls: "msg msg-indent",
+        html: `
+          <div class="final-cut-card" data-action="open-final-cut" data-version="1">
+            <div class="fcc-media">
+              <img src="${esc(poster)}" alt="" loading="lazy">
+              <span class="fcc-play-overlay">${ICON.play}</span>
+            </div>
+            <div class="fcc-details">
+              <div class="fcc-title-row">
+                <span class="fcc-title">${esc(title)}</span>
+                <span class="pill ok">v1 ready</span>
+              </div>
+              <div class="fcc-meta">${fmtDur(runtime)} runtime · ${shots.length} clips · captions burned in</div>
+              <button type="button" class="btn ${S.inFinalMode ? "btn-ghost" : "btn-primary"} btn-sm fcc-btn" data-action="open-final-cut" data-version="1">
+                ${S.inFinalMode ? `${ICON.check} Viewing in panel` : `${ICON.play} Open final cut`}
+              </button>
+            </div>
+          </div>
+        `,
+      });
     }
 
-    // Director chat history and later versions, in time order
+    // 4. Director notes history (messages and versions ≥ 2)
     const later = [];
     (job.messages || []).forEach((m, i) => later.push({ t: m.ts, kind: "msg", m, i }));
     (job.versions || []).slice(1).forEach((v) => later.push({ t: v.created_at, kind: "ver", v }));
     later.sort((a, b) => String(a.t).localeCompare(String(b.t)));
+
     later.forEach((x) => {
       if (x.kind === "msg") {
         if (x.m.role === "user") {
           items.push({
             key: `m-${x.i}`,
             cls: "msg msg-user",
-            html: `<span class="avatar avatar-user">You</span><div class="msg-body"><div class="msg-meta"><span class="msg-who">Director note</span><span class="msg-time">${esc(fmtTime(x.m.ts))}</span></div><div class="msg-text">${esc(x.m.text)}</div></div>`,
+            html: `
+              <span class="avatar avatar-user">You</span>
+              <div class="msg-body">
+                <div class="msg-meta">
+                  <span class="msg-who">Director note</span>
+                  <span class="msg-time">${esc(fmtTime(x.m.ts))}</span>
+                </div>
+                <div class="msg-text">${esc(x.m.text)}</div>
+              </div>
+            `,
           });
         } else {
+          // Parse "Re-shooting shot(s): a, b." into chips
           const m = /Re-shooting shot\(s\):\s*([^.]*)\.?/i.exec(x.m.text || "");
           const ids = m ? m[1].split(",").map((s) => s.trim()).filter(Boolean) : [];
           const text = m ? x.m.text.replace(m[0], "").trim() : x.m.text;
-          items.push(
-            agentMsg(
-              `m-${x.i}`,
-              `<div class="msg-text">${esc(text)}</div>${ids.length ? `<div class="regen-list"><span class="msg-time">Regenerating:</span>${ids.map((s) => `<code data-shot="${esc(s)}">${esc(shortId(s))}</code>`).join("")}</div>` : ""}`,
-              x.m.ts
-            )
-          );
+          const chips = ids.length
+            ? `<div class="regen-chips"><span>Regenerating:</span>${ids
+                .map((s) => `<code data-shot="${esc(s)}">${esc(shortId(s))}</code>`)
+                .join("")}</div>`
+            : "";
+
+          items.push({
+            key: `m-${x.i}`,
+            cls: "msg msg-agent",
+            html: `
+              <span class="avatar avatar-agent">${ICON.play}</span>
+              <div class="msg-body">
+                <div class="msg-meta">
+                  <span class="msg-who">Director agent</span>
+                  <span class="msg-time">${esc(fmtTime(x.m.ts))}</span>
+                </div>
+                <div class="msg-text">${esc(text)}</div>
+                ${chips}
+              </div>
+            `,
+          });
         }
       } else {
-        items.push(
-          indentMsg(
-            `v-${x.v.version}`,
-            toolCard({
-              id: `v-${x.v.version}`,
-              icon: ICON.cut,
-              title: `Cut v${x.v.version} ready`,
-              tool: "ffmpeg",
-              pill: `<span class="pill ok">v${x.v.version}</span>`,
-              summary: `${esc(x.v.message || "")}${(x.v.changed_shots || []).length ? `<div class="regen-list"><span class="msg-time">Re-shot:</span>${x.v.changed_shots.map((s) => `<code data-shot="${esc(s)}">${esc(shortId(s))}</code>`).join("")}</div>` : ""}
-                <div class="done-poster" data-play-version="${x.v.version}"><img src="${esc(x.v.poster_url || "")}" alt=""><span class="gcard-play">${ICON.play} Watch v${x.v.version}</span></div>`,
-            })
-          )
-        );
+        // Version card (v2, v3...)
+        const changed = (x.v.changed_shots || [])
+          .map((s) => `<code data-shot="${esc(s)}">${esc(shortId(s))}</code>`)
+          .join("");
+
+        items.push({
+          key: `v-${x.v.version}`,
+          cls: "msg msg-indent",
+          html: `
+            <div class="version-card">
+              <div class="vc-media" data-action="open-final-cut" data-version="${x.v.version}">
+                <img src="${esc(x.v.poster_url || "")}" alt="">
+              </div>
+              <div class="vc-details">
+                <div class="vc-head">
+                  <span>Cut v${x.v.version} ready</span>
+                  <span class="pill ok">v${x.v.version}</span>
+                </div>
+                <div class="vc-msg">${esc(x.v.message || "")}</div>
+                ${changed ? `<div class="regen-chips"><span>Re-shot:</span>${changed}</div>` : ""}
+              </div>
+              <button type="button" class="btn btn-ghost btn-sm" data-action="open-final-cut" data-version="${x.v.version}">
+                ${S.inFinalMode && S.activeVersion === x.v.version ? "Viewing in panel" : "Open"}
+              </button>
+            </div>
+          `,
+        });
       }
     });
 
-    S.localNotes.forEach((n, i) => items.push(agentMsg(`local-${i}`, `<div class="msg-text">${esc(n.text)}</div>`, n.t)));
-    if (job.status === "failed") items.push(errorItem());
-    if (BUSY.has(job.status)) items.push(liveItem());
+    // 5. Local notes & live refinement block
+    S.localNotes.forEach((n, i) =>
+      items.push({
+        key: `local-${i}`,
+        cls: "msg msg-agent",
+        html: `
+          <span class="avatar avatar-agent">${ICON.play}</span>
+          <div class="msg-body"><div class="msg-text">${esc(n.text)}</div></div>
+        `,
+      })
+    );
+
+    // Live refinement working block
+    if (busy && job.messages && job.messages.length) {
+      const targets = (S.editTargets || [])
+        .map((s) => `<code data-shot="${esc(s)}">${esc(shortId(s))}</code>`)
+        .join("");
+
+      items.push({
+        key: "live-refinement",
+        cls: "msg msg-indent",
+        html: `
+          <div class="live-refine-block">
+            <span class="spinner"></span>
+            <span>Director is updating the film… ${targets ? `Regenerating ${targets}` : esc(liveText())}</span>
+          </div>
+        `,
+      });
+    }
+
+    // 6. Failed job error card
+    if (job.status === "failed") {
+      const canResume = !isSample();
+      items.push({
+        key: "error",
+        cls: "msg msg-indent",
+        html: `
+          <div class="error-card">
+            <b>Production paused</b>
+            <div style="margin-top:4px;color:var(--text-2);font-size:12.5px">${esc(job.error || "The pipeline stopped.")}</div>
+            ${canResume ? `<div style="margin-top:8px"><button class="btn btn-primary btn-sm" data-action="resume" type="button">Resume production</button></div>` : ""}
+          </div>
+        `,
+      });
+    }
+
     return items;
   }
 
-  function errorItem() {
-    const canResume = !isSample();
-    return indentMsg(
-      "error",
-      toolCard({
-        id: "error",
-        icon: ICON.alert,
-        title: "Production paused",
-        extraCls: "error-card",
-        summary: `${esc(S.job.error || "The pipeline stopped.")}${
-          canResume ? `<div style="margin-top:10px"><button class="btn btn-primary btn-sm" data-action="resume" type="button">Resume production</button> <span class="msg-time">Finished clips are reused, never re-rendered.</span></div>` : ""
-        }`,
-      })
-    );
-  }
-  function liveText() {
-    if (S.live) return S.live.message;
-    const j = S.job;
-    return { queued: "Queued…", planning: "Writing the plan…", planned: "Plan ready, starting production…", generating: "Rendering shots…", critiquing: "Critic reviewing takes…", assembling: "Assembling the master cut…" }[j.status] || "Working…";
-  }
-  function liveItem() {
-    const regen = S.editTargets && S.editTargets.length
-      ? `<div class="regen-list"><span class="msg-time">Will regenerate:</span>${S.editTargets.map((s) => `<code data-shot="${esc(s)}">${esc(shortId(s))}</code>`).join("")}</div>`
-      : "";
-    return indentMsg("live", `<div class="live-card"><span class="spinner"></span><span id="live-text">${esc(liveText())}</span></div>${regen}`);
-  }
-  function renderLive() {
-    const el = $("live-text");
-    if (el) el.textContent = liveText();
-    const sub = $("agent-sub");
-    if (S.job && BUSY.has(S.job.status)) {
-      sub.textContent = "Working…";
-      sub.classList.add("working");
-    }
-  }
-
-  function shotCard(shot) {
-    const t = S.takes[shot.id] || { takes: [] };
-    const takes = t.takes || [];
-    const st = shotState(shot);
-    const thumb = shotThumb(shot);
-    const acc = takes.find((x) => x.accepted);
-    const running = st.cls === "run";
-    const headScore = acc && acc.critique ? scoreHtml(acc.critique.score) : "";
-    const head = `<div class="card-head" data-shot="${esc(shot.id)}" style="cursor:pointer">
-      ${thumb ? `<img class="shot-thumb" src="${esc(thumb)}" alt="" loading="lazy">` : `<span class="shot-thumb skel"></span>`}
-      <div class="shot-head-text"><div class="t1"><span class="sid">${esc(shortId(shot.id))}</span>${esc(shot.description)}</div>
-      <div class="t2"><span class="sdot ${st.cls}"></span><span class="st-label ${st.cls}">${esc(st.label)}</span><span>· ${fmtDur(shot.duration_s)} · ${esc(shot.camera)}${t.chained_from_shot_id ? ` · chained from ${esc(shortId(t.chained_from_shot_id))}` : ""}</span></div></div>
-      ${headScore}</div>`;
-    const showFlow = takes.length > 1 || shot.is_flagged_fallback || running || (takes.length === 1 && !acc);
-    if (!showFlow) return `<div class="card shot-card">${head}</div>`;
-    let flow = "";
-    takes.forEach((tk, i) => {
-      const c = tk.critique;
-      const verdict = tk.accepted
-        ? c && c.passed ? `<span class="pill ok">accepted</span>` : `<span class="pill warn">best of ${takes.length} · flagged</span>`
-        : c && !c.passed ? `<span class="pill bad">rejected</span>` : c ? `<span class="pill">passed</span>` : `<span class="pill run">reviewing</span>`;
-      flow += `<div class="take-row ${tk.accepted ? "" : "rejected"}">
-        <div class="take-thumb" data-shot="${esc(shot.id)}" data-take="${tk.attempt}">${tk.image_url ? `<img src="${esc(tk.image_url)}" alt="" loading="lazy">` : ""}<span class="play">${ICON.play}</span></div>
-        <div><div class="take-line">Take ${tk.attempt} ${c ? scoreHtml(c.score) : ""} ${verdict}</div>
-        ${c && c.reasons && c.reasons.length && !(tk.accepted && c.passed) ? `<div class="take-reason">${reasonHtml(c.reasons[0])}</div>` : c && tk.accepted && c.reasons && c.reasons.length ? `<div class="take-reason">${esc(splitReason(c.reasons[0]).text)}</div>` : ""}</div></div>`;
-      const next = takes[i + 1];
-      if (c && !c.passed && (next || running)) {
-        flow += `<div class="correction"><b>Correction applied →</b> ${esc(c.suggested_prompt_fix || "Prompt revised from critic notes.")}</div>`;
-      }
-    });
-    if (running) {
-      const img = S.liveImages[shot.id];
-      flow += `<div class="take-row"><div class="take-thumb">${img ? `<img src="${esc(img)}" alt="">` : '<div class="skel" style="position:absolute;inset:0;border-radius:0"></div>'}</div>
-        <div><div class="take-line">Take ${takes.length + 1} <span class="pill run">${esc(st.label)}</span></div><div class="take-reason">Veo is rendering this take; the critic reviews it next.</div></div></div>`;
-    }
-    return `<div class="card shot-card open">${head}<div class="card-body"><div class="takes-flow">${flow}</div></div></div>`;
-  }
-
+  // Keyed DOM reconciliation
   function renderThread() {
     const container = $("thread");
     const items = buildThread();
-    const nearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 140;
     if (S.firstRender) container.innerHTML = "";
+
     const existing = new Map();
     [...container.children].forEach((el) => el.dataset.key && existing.set(el.dataset.key, el));
     const keep = new Set();
-    let added = 0;
+
     items.forEach((it, idx) => {
       keep.add(it.key);
       let el = existing.get(it.key);
@@ -829,411 +1473,817 @@
         el = document.createElement("div");
         el.dataset.key = it.key;
         el.className = `${it.cls} enter`;
-        if (S.firstRender) el.style.animationDelay = `${Math.min(idx * 30, 900)}ms`;
         el.innerHTML = it.html;
         el._html = it.html;
-        added++;
       } else if (el._html !== it.html) {
+        // Preserve audio playing state if src is unchanged
+        const oldAudio = el.querySelector("audio");
         el.innerHTML = it.html;
         el._html = it.html;
         el.className = it.cls;
+        if (oldAudio && !oldAudio.paused) {
+          const newAudio = el.querySelector("audio");
+          if (newAudio && newAudio.src === oldAudio.src) {
+            newAudio.currentTime = oldAudio.currentTime;
+            newAudio.play().catch(() => {});
+          }
+        }
       }
       if (container.children[idx] !== el) container.insertBefore(el, container.children[idx] || null);
     });
+
     existing.forEach((el, key) => !keep.has(key) && el.remove());
-    if (S.focusShot) {
-      const target = container.querySelector(`[data-key="shot-${CSS.escape(S.focusShot)}"]`);
-      if (target) {
-        container.style.scrollBehavior = "auto";
-        container.scrollTop = Math.max(0, target.offsetTop - container.offsetTop - 120);
-        container.style.scrollBehavior = "";
-      }
-      S.focusShot = null;
-    } else if (added && (nearBottom || S.firstRender) && BUSY.has(S.job.status)) {
-      container.scrollTop = container.scrollHeight;
+
+    // Wire thinking block toggle
+    const tbHeader = $("tb-header");
+    if (tbHeader) {
+      tbHeader.onclick = () => {
+        S.thinkingExpanded = !S.thinkingExpanded;
+        S.userToggledThinking = true;
+        const tb = $("thinking-block");
+        if (tb) tb.classList.toggle("open", S.thinkingExpanded);
+      };
     }
-    const sub = $("agent-sub");
-    const busy = BUSY.has(S.job.status);
-    sub.textContent = busy ? "Working…" : S.job.status === "completed" ? (isSample() ? "Sample production · full agent trace" : "Production complete") : S.job.status === "failed" ? "Paused" : "Idle";
-    sub.classList.toggle("working", busy);
   }
 
-  $("thread").addEventListener("click", (e) => {
-    const tog = e.target.closest("[data-toggle]");
-    const takeEl = e.target.closest("[data-take]");
-    const shotEl = e.target.closest("[data-shot]");
-    const ver = e.target.closest("[data-play-version]");
-    const act = e.target.closest("[data-action]");
-    if (act && act.dataset.action === "resume") return resumeJob(act);
-    if (act && act.dataset.action === "brief") {
-      S.briefOpen = !S.briefOpen;
-      return renderThread();
+  // =========================================================
+  // Lightbox Modal Player
+  // =========================================================
+  function openTakeModal(shotId, takeAttempt) {
+    const shotData = S.takes[shotId];
+    if (!shotData) return;
+
+    const takes = shotData.takes || [];
+    const take = takes.find((t) => t.attempt === Number(takeAttempt)) || takes[0];
+    if (!take) return;
+
+    const planShot = allShots().find((s) => s.id === shotId);
+
+    $("modal-title").textContent = `Shot ${shortId(shotId)} · Take ${take.attempt}`;
+
+    const videoEl = $("modal-video");
+    const imgEl = $("modal-image");
+
+    if (take.clip_available && take.clip_url) {
+      imgEl.classList.add("hidden");
+      videoEl.classList.remove("hidden");
+      videoEl.src = take.clip_url;
+      if (take.image_url) videoEl.poster = take.image_url;
+      videoEl.load();
+      videoEl.play().catch(() => {});
+    } else if (take.image_url) {
+      videoEl.pause();
+      videoEl.classList.add("hidden");
+      imgEl.classList.remove("hidden");
+      imgEl.src = take.image_url;
+    } else {
+      videoEl.pause();
+      videoEl.classList.add("hidden");
+      imgEl.classList.add("hidden");
     }
-    if (e.target.closest("audio")) return;
-    if (ver) return playVersion(Number(ver.dataset.playVersion));
-    if (takeEl) return selectShot(takeEl.dataset.shot, Number(takeEl.dataset.take));
-    if (shotEl) return selectShot(shotEl.dataset.shot);
-    if (tog) {
-      const id = tog.dataset.toggle;
-      const card = tog.closest(".card");
-      const open = !card.classList.contains("open");
-      card.classList.toggle("open", open);
-      if (open) { S.openCards.add(id); S.closedCards.delete(id); } else { S.openCards.delete(id); S.closedCards.add(id); }
-      const wrap = card.closest("[data-key]");
-      if (wrap) wrap._html = null;
+
+    const c = take.critique;
+    const verdict = take.accepted
+      ? c && c.passed
+        ? `<span class="pill ok">Accepted · passed</span>`
+        : `<span class="pill warn">Accepted · best of ${takes.length}</span>`
+      : c && !c.passed
+      ? `<span class="pill bad">Rejected</span>`
+      : `<span class="pill run">Reviewing</span>`;
+
+    const reasonsList =
+      c && c.reasons && c.reasons.length
+        ? `<ul class="md-reasons">${c.reasons.map((r) => `<li>${reasonHtml(r)}</li>`).join("")}</ul>`
+        : "";
+
+    const fixHtml =
+      c && c.suggested_prompt_fix
+        ? `<div class="correction-box" style="margin:4px 0"><b>Prompt fix:</b> <span>${esc(c.suggested_prompt_fix)}</span></div>`
+        : "";
+
+    $("modal-details").innerHTML = `
+      <div class="md-row">
+        ${c ? scoreHtml(c.score) : ""}
+        ${verdict}
+        <span class="pill">${planShot ? fmtDur(planShot.duration_s) : "–"}</span>
+        <span class="pill mono">${esc(shotId)}</span>
+      </div>
+      ${reasonsList}
+      ${fixHtml}
+      ${planShot ? `<div style="font-size:12.5px;color:var(--text)"><b>Action:</b> ${esc(planShot.description)}</div>` : ""}
+      ${planShot && planShot.camera ? `<div style="font-size:12.5px;color:var(--muted)"><b>Camera:</b> ${esc(planShot.camera)}</div>` : ""}
+      ${take.prompt ? `<div class="md-prompt-box"><b>Visual prompt:</b> ${esc(take.prompt)}</div>` : ""}
+    `;
+
+    $("take-modal").classList.remove("hidden");
+  }
+
+  function openVideoModal(url, poster, title) {
+    $("modal-title").textContent = title || "Final cut preview";
+    const videoEl = $("modal-video");
+    const imgEl = $("modal-image");
+
+    imgEl.classList.add("hidden");
+    videoEl.classList.remove("hidden");
+    videoEl.src = url;
+    if (poster) videoEl.poster = poster;
+    videoEl.load();
+    videoEl.play().catch(() => {});
+
+    $("modal-details").innerHTML = `
+      <div class="md-row">
+        <span class="pill ok">Master cut</span>
+        <span class="pill">Burned-in captions</span>
+      </div>
+    `;
+
+    $("take-modal").classList.remove("hidden");
+  }
+
+  function closeModal() {
+    const videoEl = $("modal-video");
+    if (videoEl) {
+      videoEl.pause();
+      videoEl.removeAttribute("src");
+      videoEl.load();
+    }
+    $("take-modal").classList.add("hidden");
+  }
+
+  $("modal-close").addEventListener("click", closeModal);
+  $("modal-backdrop").addEventListener("click", closeModal);
+
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !$("take-modal").classList.contains("hidden")) {
+      closeModal();
     }
   });
-  $("jump-latest").addEventListener("click", () => ($("thread").scrollTop = $("thread").scrollHeight));
 
-  // ---------- Stage ----------
-  function resetPlayer() {
-    const v = $("player-video");
-    v.pause();
-    v.removeAttribute("src");
-    v.load();
-    v.classList.add("hidden");
-    $("player-image").classList.add("hidden");
-    $("player-empty").classList.remove("hidden");
-    $("player-badge").classList.add("hidden");
-    $("stage-label").textContent = "Stage";
-    $("progress-fill").style.width = "0";
+  // =========================================================
+  // Final Cut Mode & Inspector Panel (Step 3)
+  // =========================================================
+  function openFinalCut(opts = {}) {
+    const job = S.job;
+    if (!job) return;
+
+    let versionNum = 1;
+    if (typeof opts === "number") {
+      versionNum = opts;
+    } else if (opts.version != null) {
+      versionNum = Number(opts.version);
+    } else if (job.versions && job.versions.length) {
+      versionNum = job.versions[job.versions.length - 1].version;
+    }
+
+    const shotId = opts.shot || null;
+    const takeAttempt = opts.take != null ? Number(opts.take) : null;
+
+    S.inFinalMode = true;
+    S.activeVersion = versionNum;
+    if (shotId) S.selectedShotId = shotId;
+    if (takeAttempt != null) S.selectedTakeAttempt = takeAttempt;
+
+    const layout = $("app-layout");
+    layout.classList.add("final-mode");
+    $("final-panel").classList.remove("hidden");
+
+    if (opts.pushState !== false) {
+      const q = new URLSearchParams(location.search);
+      q.set("job", S.jobId);
+      if (shotId) {
+        q.set("shot", shotId);
+        if (takeAttempt != null) q.set("take", String(takeAttempt));
+        q.delete("cut");
+      } else {
+        q.set("cut", "1");
+        q.delete("shot");
+        q.delete("take");
+      }
+      history.pushState({}, "", `/?${q.toString()}`);
+    }
+
+    renderFinalPanel();
+
+    if (shotId && takeAttempt != null) {
+      playTakeInPanel(shotId, takeAttempt);
+    }
+    if (shotId) {
+      setTimeout(() => {
+        const sd = $("fp-shot-detail");
+        if (sd) sd.scrollIntoView({ behavior: "smooth", block: "start" });
+      }, 120);
+    }
+    renderThread();
   }
-  function currentVersion() {
-    const vs = S.job.versions || [];
-    if (!vs.length) return null;
-    return vs.find((v) => v.version === S.activeVersion) || vs[vs.length - 1];
+  window.openFinalCut = openFinalCut;
+
+  function closeFinalCut(pushState = true) {
+    S.inFinalMode = false;
+    S.playingTake = null;
+    S.selectedShotId = null;
+    S.selectedTakeAttempt = null;
+
+    const layout = $("app-layout");
+    layout.classList.remove("final-mode");
+    $("final-panel").classList.add("hidden");
+
+    const video = $("fp-video");
+    if (video) {
+      video.pause();
+      video.removeAttribute("src");
+      video.load();
+    }
+
+    if (pushState && S.jobId) {
+      history.pushState({}, "", `/?job=${S.jobId}`);
+    }
+    renderThread();
   }
-  function setVideo(src, poster, { loop = false, autoplay = false } = {}) {
-    const v = $("player-video");
-    $("player-image").classList.add("hidden");
-    $("player-empty").classList.add("hidden");
-    v.classList.remove("hidden");
-    v.loop = loop;
-    if (v.getAttribute("src") !== src) {
-      v.setAttribute("src", src);
-      if (poster) v.setAttribute("poster", poster); else v.removeAttribute("poster");
-      v.load();
-      if (autoplay) v.play().catch(() => {});
+
+  function renderFinalPanel() {
+    const job = S.job;
+    if (!job || !S.inFinalMode) return;
+
+    // 1. Header info
+    const title = (job.plan && job.plan.title) || job.brief.slice(0, 40) || "Final cut";
+    $("fp-title").textContent = title;
+
+    // Version tabs
+    const tabsContainer = $("fp-version-tabs");
+    const versions = job.versions || [];
+    if (versions.length > 1) {
+      tabsContainer.innerHTML = versions
+        .map((v) => {
+          const active = v.version === S.activeVersion ? "active" : "";
+          return `<button type="button" class="fp-vtab ${active}" data-v="${v.version}">v${v.version}</button>`;
+        })
+        .join("");
+      tabsContainer.querySelectorAll(".fp-vtab").forEach((btn) => {
+        btn.onclick = () => {
+          S.activeVersion = Number(btn.dataset.v);
+          S.playingTake = null;
+          renderFinalPanel();
+        };
+      });
+    } else {
+      tabsContainer.innerHTML = "";
+    }
+
+    // Active version media
+    const curVer = versions.find((v) => v.version === S.activeVersion) || versions[versions.length - 1] || null;
+    const finalCutUrl = (curVer && curVer.url) || job.final_video_url || "";
+    const posterUrl = (curVer && curVer.poster_url) || job.poster_url || "";
+
+    // Download link
+    const dlBtn = $("fp-download-btn");
+    dlBtn.href = finalCutUrl;
+    dlBtn.download = `${job.id}_v${S.activeVersion}.mp4`;
+
+    // Video player
+    const video = $("fp-video");
+    if (S.playingTake) {
+      const shotData = S.takes[S.playingTake.shotId];
+      const tk = shotData && shotData.takes ? shotData.takes.find((x) => x.attempt === S.playingTake.takeAttempt) : null;
+      if (tk && tk.clip_url) {
+        if (video.src !== tk.clip_url) {
+          video.src = tk.clip_url;
+          video.loop = true;
+          video.poster = tk.image_url || "";
+          video.load();
+          video.play().catch(() => {});
+        }
+        const c = tk.critique;
+        const scoreStr = c && c.score != null ? c.score.toFixed(2) : "";
+        const verdict = tk.accepted ? (c && c.passed ? "accepted" : "accepted (flagged)") : "rejected";
+        $("fp-take-badge").textContent = `Shot ${shortId(S.playingTake.shotId)} · Take ${tk.attempt} · ${scoreStr} ${verdict}`;
+        $("fp-take-overlay").classList.remove("hidden");
+      }
+    } else {
+      $("fp-take-overlay").classList.add("hidden");
+      if (video.src !== finalCutUrl && finalCutUrl) {
+        video.src = finalCutUrl;
+        video.loop = false;
+        if (posterUrl) video.poster = posterUrl;
+        video.load();
+      }
+    }
+
+    // Timings calculation
+    const scenes = (job.plan && job.plan.scenes) || [];
+    let cumTime = 0;
+    const timings = [];
+    scenes.forEach((sc) => {
+      sc.shots.forEach((s) => {
+        timings.push({
+          shot: s,
+          scene: sc,
+          startTime: cumTime,
+          duration: s.duration_s,
+          endTime: cumTime + s.duration_s,
+        });
+        cumTime += s.duration_s;
+      });
+    });
+    S.shotTimings = timings;
+    S.totalDuration = Math.max(1, cumTime);
+
+    // Timeline scale & dimensions
+    const scrollEl = $("fp-timeline-scroll");
+    const INSET = 16;
+    const availableW = Math.max(300, scrollEl.clientWidth || 860);
+    const usableW = Math.max(200, availableW - (2 * INSET));
+
+    // For films ~30-45s, scale to exactly fill the usable width (no horizontal scroll).
+    // Only longer films (>50s) use minPxPerSec and scroll horizontally.
+    const minPxPerSec = 13;
+    const fitScale = usableW / S.totalDuration;
+    const fitsWidth = (S.totalDuration <= 50) || (fitScale >= minPxPerSec);
+    const scale = fitsWidth ? fitScale : minPxPerSec;
+    S.timelineScale = scale;
+    S.timelineFitsWidth = fitsWidth;
+    S.timelineInset = INSET;
+
+    const trackWidth = Math.round(S.totalDuration * scale);
+
+    const canvas = $("fp-timeline-canvas");
+    canvas.style.width = fitsWidth ? "100%" : `${trackWidth + (2 * INSET)}px`;
+
+    // 2. Render Track (Scenes & Clips)
+    renderTimelineTrack(scenes, timings, scale, trackWidth);
+
+    // 3. Render Ruler
+    renderTimelineRuler(S.totalDuration, scale, trackWidth);
+
+    // 4. Render KPI Line
+    const st = loopStats();
+    $("fp-kpi-line").textContent = `${fmtDur(st.runtime)} runtime · ${st.shots} shots · ${st.takes} takes rendered · ${st.reshoots} critic reshoots · avg critic ${st.avg ? st.avg.toFixed(2) : "–"}`;
+
+    // 5. Render Shot Detail Strip
+    renderShotDetail();
+  }
+
+  function renderTimelineTrack(scenes, timings, scale, trackWidth) {
+    const track = $("fp-track");
+    track.innerHTML = "";
+
+    scenes.forEach((sc) => {
+      if (!sc.shots || !sc.shots.length) return;
+      const firstTiming = timings.find((t) => t.shot.id === sc.shots[0].id);
+      const lastTiming = timings.find((t) => t.shot.id === sc.shots[sc.shots.length - 1].id);
+      const scStart = firstTiming ? firstTiming.startTime : 0;
+      const scEnd = lastTiming ? lastTiming.endTime : 0;
+      const sceneW = Math.round(scEnd * scale) - Math.round(scStart * scale);
+
+      const scBlock = document.createElement("div");
+      scBlock.className = "fp-scene-block";
+      scBlock.style.width = `${sceneW}px`;
+      scBlock.style.flex = `0 0 ${sceneW}px`;
+
+      const label = document.createElement("div");
+      label.className = "fp-scene-label";
+      label.textContent = `S${sc.scene_number} · ${sc.title}`;
+      label.title = `Scene ${sc.scene_number}: ${sc.title}`;
+      scBlock.appendChild(label);
+
+      const shotsWrap = document.createElement("div");
+      shotsWrap.className = "fp-scene-shots";
+
+      sc.shots.forEach((s) => {
+        const item = timings.find((t) => t.shot.id === s.id);
+        const sStart = item ? item.startTime : 0;
+        const sEnd = item ? item.endTime : s.duration_s;
+        const shotW = Math.round(sEnd * scale) - Math.round(sStart * scale);
+
+        const t = S.takes[s.id] || { takes: [] };
+        const takes = t.takes || [];
+        const thumb = shotThumb(s);
+        const st = shotState(s);
+        const active = s.id === S.selectedShotId ? "active" : "";
+
+        const tile = document.createElement("div");
+        tile.className = `fp-clip-tile ${active}`;
+        tile.style.width = `${shotW}px`;
+        tile.style.flex = `0 0 ${shotW}px`;
+        tile.dataset.shot = s.id;
+        tile.title = `Shot ${shortId(s.id)} (${fmtDur(s.duration_s)}) - ${s.description}`;
+
+        const takesBadge = takes.length > 1 ? `<span class="fp-clip-takes-count">${takes.length} takes</span>` : "";
+
+        tile.innerHTML = `
+          ${thumb ? `<img src="${esc(thumb)}" alt="" loading="lazy">` : ""}
+          <div class="fp-clip-overlay">
+            <div class="fp-clip-id">${esc(shortId(s.id))}</div>
+            <div class="fp-clip-badges">
+              <span class="fp-clip-sdot ${st.cls}"></span>
+              ${takesBadge}
+            </div>
+          </div>
+        `;
+
+        tile.onclick = (e) => {
+          e.stopPropagation();
+          selectShotInTimeline(s.id);
+        };
+
+        shotsWrap.appendChild(tile);
+      });
+
+      scBlock.appendChild(shotsWrap);
+      track.appendChild(scBlock);
+    });
+  }
+
+  function renderTimelineRuler(totalDuration, scale, trackWidth) {
+    const ruler = $("fp-ruler");
+    ruler.innerHTML = "";
+
+    const majorSec = scale >= 18 ? 5 : 10;
+    const minorSec = majorSec === 5 ? 1 : 2;
+
+    for (let sec = 0; sec <= totalDuration; sec += minorSec) {
+      const isMajor = sec % majorSec === 0 || sec === Math.floor(totalDuration);
+      const x = Math.round(sec * scale);
+      if (x > trackWidth + 1) break;
+
+      const tick = document.createElement("span");
+      tick.className = `fp-ruler-tick ${isMajor ? "major" : ""}`;
+      tick.style.left = `${x}px`;
+      ruler.appendChild(tick);
+
+      if (isMajor) {
+        const lbl = document.createElement("span");
+        lbl.className = "fp-ruler-label";
+        lbl.style.left = `${x}px`;
+        lbl.style.transform = "translateX(-50%)";
+        lbl.textContent = fmtRulerTime(sec);
+        ruler.appendChild(lbl);
+      }
+    }
+
+    if (Math.round(totalDuration * scale) > 0) {
+      const endX = trackWidth;
+      const hasEndTick = ruler.querySelector(`.fp-ruler-tick[style*="${endX}px"]`);
+      if (!hasEndTick) {
+        const tick = document.createElement("span");
+        tick.className = "fp-ruler-tick major";
+        tick.style.left = `${endX}px`;
+        ruler.appendChild(tick);
+
+        const lbl = document.createElement("span");
+        lbl.className = "fp-ruler-label";
+        lbl.style.left = `${endX}px`;
+        lbl.style.transform = "translateX(-50%)";
+        lbl.textContent = fmtRulerTime(totalDuration);
+        ruler.appendChild(lbl);
+      }
     }
   }
-  function setImage(src) {
-    const v = $("player-video");
-    v.pause();
-    v.classList.add("hidden");
-    $("player-empty").classList.add("hidden");
-    const img = $("player-image");
-    img.classList.remove("hidden");
-    if (img.getAttribute("src") !== src) img.setAttribute("src", src);
-  }
-  function setEmpty(text) {
-    $("player-video").classList.add("hidden");
-    $("player-image").classList.add("hidden");
-    $("player-empty").classList.remove("hidden");
-    $("player-empty-text").textContent = text;
-  }
-  function badge(html) {
-    const b = $("player-badge");
-    if (!html) return b.classList.add("hidden");
-    b.innerHTML = html;
-    b.classList.remove("hidden");
+
+  function fmtRulerTime(sec) {
+    const m = Math.floor(sec / 60);
+    const s = Math.floor(sec % 60);
+    return `${m}:${String(s).padStart(2, "0")}`;
   }
 
-  function renderStage() {
-    const job = S.job;
-    const shots = allShots();
-    const ver = currentVersion();
-    // Auto-follow the agent while it works (until the user picks a shot).
-    if (!S.userPicked) {
-      if (ver && !BUSY.has(job.status)) {
-        S.playerMode = "final";
-      } else {
-        const running = shots.find((s) => ["generating", "critiquing", "retrying"].includes(s.status));
-        const lastDone = [...shots].reverse().find((s) => shotThumb(s));
-        const pick = running || lastDone;
-        if (pick && !(ver && S.playerMode === "final")) {
-          S.selectedShot = pick.id;
-          S.playerMode = "shot";
+  function selectShotInTimeline(shotId) {
+    S.selectedShotId = shotId;
+    S.selectedTakeAttempt = null;
+
+    document.querySelectorAll(".fp-clip-tile").forEach((tile) => {
+      tile.classList.toggle("active", tile.dataset.shot === shotId);
+    });
+
+    const item = S.shotTimings.find((t) => t.shot.id === shotId);
+    if (item) {
+      const video = $("fp-video");
+      if (S.playingTake) {
+        S.playingTake = null;
+        renderFinalPanel();
+      }
+      video.currentTime = item.startTime;
+      video.play().catch(() => {});
+    }
+
+    const q = new URLSearchParams(location.search);
+    q.set("job", S.jobId);
+    q.set("shot", shotId);
+    q.delete("cut");
+    q.delete("take");
+    history.replaceState({}, "", `/?${q.toString()}`);
+
+    renderShotDetail();
+    const sd = $("fp-shot-detail");
+    if (sd) {
+      setTimeout(() => {
+        sd.scrollIntoView({ behavior: "smooth", block: "start" });
+      }, 50);
+    }
+  }
+
+  function renderShotDetail() {
+    const sd = $("fp-shot-detail");
+    const hint = $("fp-hint-line");
+    if (!S.selectedShotId) {
+      sd.classList.add("hidden");
+      sd.innerHTML = "";
+      if (hint) hint.classList.remove("hidden");
+      return;
+    }
+    if (hint) hint.classList.add("hidden");
+
+    const timing = S.shotTimings.find((t) => t.shot.id === S.selectedShotId);
+    const planShot = timing ? timing.shot : allShots().find((s) => s.id === S.selectedShotId);
+    const scene = timing ? timing.scene : null;
+    const shotData = S.takes[S.selectedShotId] || { takes: [] };
+    const takes = shotData.takes || [];
+
+    if (!planShot) {
+      sd.classList.add("hidden");
+      if (hint) hint.classList.remove("hidden");
+      return;
+    }
+
+    const st = shotState(planShot);
+
+    const sceneLabel = scene ? `Scene ${scene.scene_number} · Shot ${shortId(planShot.id)}` : `Shot ${shortId(planShot.id)}`;
+    const headHtml = `
+      <div class="fp-sd-header">
+        <div class="fp-sd-title">
+          <span>${esc(sceneLabel)}</span>
+          <span class="pill mono">${esc(planShot.id)}</span>
+          <span class="pill ${st.pill}">${esc(st.label)}</span>
+          <span class="pill">${fmtDur(planShot.duration_s)}</span>
+        </div>
+        <button type="button" class="fp-sd-close" id="fp-sd-close" aria-label="Close shot detail">×</button>
+      </div>
+    `;
+
+    const takesHtml = takes.length
+      ? takes
+          .map((tk) => {
+            const c = tk.critique;
+            const isPlaying = S.playingTake && S.playingTake.shotId === planShot.id && S.playingTake.takeAttempt === tk.attempt;
+            const isAccepted = tk.accepted;
+            const verdict = tk.accepted
+              ? c && c.passed
+                ? `<span class="pill ok">Accepted · passed</span>`
+                : `<span class="pill warn">Accepted · best of ${takes.length}</span>`
+              : c && !c.passed
+              ? `<span class="pill bad">Rejected</span>`
+              : `<span class="pill run">Reviewing</span>`;
+
+            const reasonsHtml =
+              c && c.reasons && c.reasons.length
+                ? `<div class="fp-tc-reasons">${c.reasons.map((r) => `<div>${reasonHtml(r)}</div>`).join("")}</div>`
+                : "";
+
+            const correctionHtml =
+              c && !c.passed && c.suggested_prompt_fix
+                ? `<div class="fp-tc-correction"><b>Correction applied →</b> <span>${esc(c.suggested_prompt_fix)}</span></div>`
+                : "";
+
+            return `
+              <div class="fp-take-card ${isAccepted ? "accepted" : ""} ${isPlaying ? "playing" : ""}" data-shot="${esc(planShot.id)}" data-take="${tk.attempt}">
+                <div class="fp-tc-thumb">
+                  ${tk.image_url ? `<img src="${esc(tk.image_url)}" alt="">` : ""}
+                  <span class="play-overlay">${ICON.play}</span>
+                </div>
+                <div class="fp-tc-head">
+                  <div class="fp-tc-head-left">
+                    <span>Take ${tk.attempt}</span>
+                    ${c ? scoreHtml(c.score) : ""}
+                  </div>
+                  ${verdict}
+                </div>
+                ${reasonsHtml}
+                ${correctionHtml}
+              </div>
+            `;
+          })
+          .join("")
+      : `<div style="font-size:12px;color:var(--muted)">No takes recorded yet.</div>`;
+
+    const voHtml = planShot.vo_line
+      ? `<div class="fp-sd-vo">“${esc(planShot.vo_line)}”</div>`
+      : "";
+
+    const acceptedTakeObj = takes.find((t) => t.accepted) || takes[takes.length - 1];
+    const finalPrompt = (acceptedTakeObj && acceptedTakeObj.prompt) || planShot.visual_prompt || "";
+
+    const promptHtml = finalPrompt
+      ? `
+        <div>
+          <button type="button" class="fp-sd-prompt-toggle" id="fp-prompt-toggle">
+            ${S.expandedVeoPrompt ? "Hide final Veo prompt ▴" : "Show final Veo prompt ▾"}
+          </button>
+          ${S.expandedVeoPrompt ? `<div class="fp-sd-prompt-box">${esc(finalPrompt)}</div>` : ""}
+        </div>
+      `
+      : "";
+
+    sd.innerHTML = `
+      ${headHtml}
+      <div class="fp-sd-body">
+        <div class="fp-sd-takes-grid">
+          ${takesHtml}
+        </div>
+        <div class="fp-sd-meta">
+          <div><b>Action:</b> ${esc(planShot.description)}</div>
+          ${planShot.camera ? `<div><b>Camera:</b> ${esc(planShot.camera)}</div>` : ""}
+          ${voHtml}
+          ${promptHtml}
+        </div>
+      </div>
+    `;
+
+    sd.classList.remove("hidden");
+
+    const closeBtn = $("fp-sd-close");
+    if (closeBtn) {
+      closeBtn.onclick = () => {
+        S.selectedShotId = null;
+        renderShotDetail();
+        document.querySelectorAll(".fp-clip-tile.active").forEach((t) => t.classList.remove("active"));
+        const q = new URLSearchParams(location.search);
+        q.set("cut", "1");
+        q.delete("shot");
+        q.delete("take");
+        history.replaceState({}, "", `/?${q.toString()}`);
+      };
+    }
+
+    const promptToggle = $("fp-prompt-toggle");
+    if (promptToggle) {
+      promptToggle.onclick = () => {
+        S.expandedVeoPrompt = !S.expandedVeoPrompt;
+        renderShotDetail();
+      };
+    }
+
+    sd.querySelectorAll(".fp-take-card").forEach((card) => {
+      card.onclick = () => {
+        const shotId = card.dataset.shot;
+        const takeAttempt = Number(card.dataset.take);
+        playTakeInPanel(shotId, takeAttempt);
+      };
+    });
+  }
+
+  function playTakeInPanel(shotId, takeAttempt) {
+    const shotData = S.takes[shotId];
+    if (!shotData) return;
+    const tk = (shotData.takes || []).find((t) => t.attempt === takeAttempt);
+    if (!tk) return;
+
+    S.playingTake = { shotId, takeAttempt };
+
+    const video = $("fp-video");
+    if (tk.clip_available && tk.clip_url) {
+      video.src = tk.clip_url;
+      video.loop = true;
+      if (tk.image_url) video.poster = tk.image_url;
+      video.load();
+      video.play().catch(() => {});
+    } else if (tk.image_url) {
+      video.pause();
+      video.poster = tk.image_url;
+    }
+
+    const c = tk.critique;
+    const scoreStr = c && c.score != null ? c.score.toFixed(2) : "";
+    const verdict = tk.accepted ? (c && c.passed ? "accepted" : "accepted (flagged)") : "rejected";
+    $("fp-take-badge").textContent = `Shot ${shortId(shotId)} · Take ${tk.attempt} · ${scoreStr} ${verdict}`;
+    $("fp-take-overlay").classList.remove("hidden");
+
+    renderShotDetail();
+  }
+
+  // Playhead sync & Timeline interaction
+  $("fp-video").addEventListener("timeupdate", () => {
+    if (S.playingTake) return;
+    const ct = $("fp-video").currentTime;
+    const playhead = $("fp-playhead");
+    if (playhead) {
+      const inset = S.timelineInset || 16;
+      const x = inset + Math.round(ct * S.timelineScale);
+      playhead.style.left = `${x}px`;
+
+      const wrap = $("fp-timeline-scroll");
+      if (wrap && !S.timelineFitsWidth) {
+        const left = wrap.scrollLeft;
+        const right = left + wrap.clientWidth;
+        if (x > right - 60) {
+          wrap.scrollLeft = x - 120;
+        } else if (x < left) {
+          wrap.scrollLeft = Math.max(0, x - 40);
         }
       }
     }
-    if (S.playerMode === "final" && ver) {
-      setVideo(ver.url, ver.poster_url);
-      $("stage-label").innerHTML = `Final cut <span class="pill">v${ver.version}</span> <span class="sid">${fmtDur(shots.reduce((a, s) => a + s.duration_s, 0))} · ${shots.length} shots</span>`;
-      badge("");
-    } else if (S.selectedShot && shots.find((s) => s.id === S.selectedShot)) {
-      const shot = shots.find((s) => s.id === S.selectedShot);
-      const t = S.takes[shot.id] || { takes: [] };
-      const take = (S.selectedTake && t.takes.find((x) => x.attempt === S.selectedTake)) || t.takes.find((x) => x.accepted) || t.takes[t.takes.length - 1];
-      const st = shotState(shot);
-      if (take && take.clip_available && take.clip_url) setVideo(take.clip_url, take.image_url, { loop: true, autoplay: S.userPicked });
-      else if (take && take.image_url) setImage(take.image_url);
-      else if (shotThumb(shot)) setImage(shotThumb(shot));
-      else setEmpty("Rendering this shot…");
-      $("stage-label").innerHTML = `<span class="sid">${esc(shot.id)}</span> ${esc(shot.description)}`;
-      badge(take ? `Take ${take.attempt}${take.critique ? ` · critic ${take.critique.score.toFixed(2)}` : ""} · ${esc(st.label)}` : esc(st.label));
-    } else {
-      setEmpty(job.plan ? "The film will appear here as shots are rendered." : "The agent is writing the plan…");
-      $("stage-label").textContent = job.plan ? job.plan.title : "Planning";
-      badge("");
-    }
-    $("show-final-btn").classList.toggle("hidden", !(ver && S.playerMode !== "final"));
-    const dl = $("download-btn");
-    dl.classList.toggle("hidden", !ver);
-    if (ver) dl.href = ver.url;
-    const vs = job.versions || [];
-    $("version-tabs").innerHTML = vs.length > 1
-      ? vs.map((v) => `<button type="button" data-version="${v.version}" class="${ver && v.version === ver.version && S.playerMode === "final" ? "active" : ""}">v${v.version}</button>`).join("")
-      : "";
-
-    // Progress
-    const st = loopStats();
-    let pct = 0, label = "";
-    const busy = BUSY.has(job.status);
-    if (job.status === "completed") { pct = 100; label = "Production complete"; }
-    else if (job.status === "failed") { pct = st.shots ? 10 + (80 * st.done) / st.shots : 5; label = "Paused · resumable"; }
-    else if (!job.plan) { pct = 6; label = "Planning…"; }
-    else if (job.status === "assembling") { pct = 94; label = "Assembling master cut…"; }
-    else { pct = 10 + (80 * st.done) / Math.max(1, st.shots); label = `${st.done} / ${st.shots} shots approved`; }
-    $("progress-fill").style.width = `${pct}%`;
-    $("progress-label").textContent = label;
-    $("progress-row").classList.toggle("hidden", !busy && job.status === "completed" && false);
-
-    $("stats").innerHTML = job.plan
-      ? `<div class="stat"><b>${fmtDur(st.runtime)}</b><span>runtime</span></div>
-         <div class="stat"><b>${st.shots}</b><span>shots · ${job.plan.scenes.length} scenes</span></div>
-         <div class="stat"><b>${st.takes}</b><span>takes rendered</span></div>
-         <div class="stat"><b>${st.reshoots}</b><span>critic reshoots</span></div>
-         <div class="stat"><b>${st.avg != null ? st.avg.toFixed(2) : "–"}</b><span>avg critic score</span></div>`
-      : `<div class="stat"><div class="skel skel-line w60"></div><span>runtime</span></div><div class="stat"><div class="skel skel-line w40"></div><span>shots</span></div><div class="stat"><div class="skel skel-line w40"></div><span>takes</span></div><div class="stat"><div class="skel skel-line w40"></div><span>reshoots</span></div><div class="stat"><div class="skel skel-line w40"></div><span>critic</span></div>`;
-
-    // Filmstrip
-    $("filmstrip").innerHTML = job.plan
-      ? job.plan.scenes
-          .map(
-            (sc) => `<div class="fs-scene"><div class="fs-scene-label"><b>S${sc.scene_number}</b>${esc(sc.title)}</div><div class="fs-shots">${sc.shots
-              .map((s) => {
-                const th = shotThumb(s);
-                const ss = shotState(s);
-                const n = ((S.takes[s.id] || {}).takes || []).length;
-                return `<button type="button" class="fs-shot ${S.selectedShot === s.id && S.playerMode === "shot" ? "selected" : ""}" data-fs="${esc(s.id)}" title="${esc(s.description)}">
-                  <div class="fs-img">${th ? `<img src="${esc(th)}" alt="" loading="lazy">` : `<div class="skel ${ss.cls === "run" ? "" : ""}"></div>`}<span class="fs-dur">${fmtDur(s.duration_s)}</span>${n > 1 ? `<span class="fs-takes">${n} takes</span>` : ""}</div>
-                  <div class="fs-meta"><span class="sdot ${ss.cls}"></span><span class="sid">${esc(shortId(s.id))}</span><span class="fs-label">${esc(fsLabel(s, ss))}</span></div></button>`;
-              })
-              .join("")}</div></div>`
-          )
-          .join("")
-      : `<div class="fs-scene"><div class="fs-shots">${'<div class="fs-shot"><div class="fs-img"><div class="skel"></div></div></div>'.repeat(5)}</div></div>`;
-    const sel = $("filmstrip").querySelector(".fs-shot.selected");
-    if (sel && S.userPicked) sel.scrollIntoView({ block: "nearest", inline: "center" });
-  }
-  function fsLabel(shot, ss) {
-    const acc = acceptedTake(shot.id);
-    if (ss.cls === "pass" || ss.cls === "flag") return acc && acc.critique ? `${ss.cls === "flag" ? "best" : "pass"} · ${acc.critique.score.toFixed(2)}` : ss.label;
-    return ss.label;
-  }
-  $("filmstrip").addEventListener("click", (e) => {
-    const b = e.target.closest("[data-fs]");
-    if (b) selectShot(b.dataset.fs);
   });
-  $("version-tabs").addEventListener("click", (e) => {
-    const b = e.target.closest("[data-version]");
-    if (b) playVersion(Number(b.dataset.version));
-  });
-  $("show-final-btn").addEventListener("click", () => playVersion(null));
 
-  function selectShot(shotId, take = null) {
-    S.selectedShot = shotId;
-    S.selectedTake = take;
-    S.playerMode = "shot";
-    S.userPicked = true;
-    setInspectorOpen(true);
-    setTab("shot");
-    const q = new URLSearchParams(location.search);
-    q.set("shot", shotId);
-    history.replaceState({}, "", `/?${q}`);
-    renderStage();
-    renderInspector();
-  }
-  function playVersion(version) {
-    S.activeVersion = version;
-    S.playerMode = "final";
-    S.userPicked = true;
-    const q = new URLSearchParams(location.search);
-    q.delete("shot");
-    history.replaceState({}, "", `/?${q}`);
-    renderStage();
-    const v = $("player-video");
-    if (!v.classList.contains("hidden")) v.play().catch(() => {});
-  }
+  $("fp-timeline-scroll").addEventListener("click", (e) => {
+    if (e.target.closest(".fp-clip-tile")) return;
 
-  // ---------- Inspector ----------
-  const INSP_KEY = "showrunner_inspector";
-  function inspectorPref() {
-    try { return localStorage.getItem(INSP_KEY) !== "closed"; } catch (e) { return true; }
-  }
-  function setInspectorOpen(open, persist = false) {
-    $("view-workspace").classList.toggle("no-inspector", !open);
-    $("toggle-inspector").classList.toggle("active", open);
-    if (persist) try { localStorage.setItem(INSP_KEY, open ? "open" : "closed"); } catch (e) { /* ignore */ }
-  }
-  $("toggle-inspector").addEventListener("click", () => setInspectorOpen($("view-workspace").classList.contains("no-inspector"), true));
-  $("close-inspector").addEventListener("click", () => setInspectorOpen(false, true));
-  function setTab(tab) {
-    document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === tab));
-    $("inspector-shot").classList.toggle("hidden", tab !== "shot");
-    $("inspector-bible").classList.toggle("hidden", tab !== "bible");
-  }
-  document.querySelectorAll(".tab").forEach((t) => t.addEventListener("click", () => setTab(t.dataset.tab)));
+    const canvas = $("fp-timeline-canvas");
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    const inset = S.timelineInset || 16;
+    const clickX = e.clientX - rect.left - inset;
+    const seekTime = Math.max(0, Math.min(S.totalDuration, clickX / S.timelineScale));
 
-  function renderInspector() {
-    const job = S.job;
-    const plan = job && job.plan;
-    const shots = allShots();
-    const shot = shots.find((s) => s.id === S.selectedShot);
-    const el = $("inspector-shot");
-    if (!plan) {
-      el.innerHTML = `<div class="skel skel-line w60"></div><div class="skel skel-line w90"></div><div class="skel" style="height:140px;margin-top:14px"></div>`;
-    } else if (!shot) {
-      el.innerHTML = `<div class="empty-state">Select a shot in the timeline or the agent thread to inspect its prompt, camera, voiceover and every take the critic reviewed.</div>`;
-    } else {
-      const sc = plan.scenes.find((x) => x.id === shot.scene_id) || {};
-      const t = S.takes[shot.id] || { takes: [] };
-      const st = shotState(shot);
-      const takes = t.takes || [];
-      const takesHtml = takes.length
-        ? `<div class="takes-grid ${takes.length === 1 ? "single" : ""}">${takes
-            .map((tk) => {
-              const c = tk.critique;
-              const verdict = tk.accepted
-                ? c && c.passed ? ["ok", "Accepted · passed"] : ["warn", `Accepted · best of ${takes.length}`]
-                : c && !c.passed ? ["bad", "Rejected"] : c ? ["ok", "Passed"] : ["", "Reviewing…"];
-              return `<div class="take-card ${tk.accepted ? "accepted" : ""}">
-                <div class="tc-media" data-insp-take="${tk.attempt}">${tk.image_url ? `<img src="${esc(tk.image_url)}" alt="" loading="lazy">` : ""}<span class="play">${ICON.play}</span></div>
-                <div class="tc-body"><div class="tc-head"><span>Take ${tk.attempt}</span>${c ? scoreHtml(c.score) : ""}</div>
-                <div class="tc-verdict ${verdict[0]}">${verdict[1]}</div>
-                ${c && c.reasons && c.reasons.length ? `<ul class="tc-reasons">${c.reasons.map((r) => `<li>${reasonHtml(r)}</li>`).join("")}</ul>` : ""}
-                ${c && !c.passed && c.suggested_prompt_fix && !tk.accepted ? `<div class="tc-fix">→ ${esc(c.suggested_prompt_fix)}</div>` : ""}</div></div>`;
-            })
-            .join("")}</div>`
-        : `<div class="empty-state" style="padding:16px">No takes yet. ${st.cls === "run" ? "Veo is rendering take 1." : "Queued."}</div>`;
-      el.innerHTML = `
-        <div class="insp-title">Scene ${sc.scene_number || "?"} · Shot ${esc(shortId(shot.id).split(".")[1] || "")}</div>
-        <div class="insp-sub"><span class="pill ${st.pill}">${esc(st.label)}</span><span class="pill">${fmtDur(shot.duration_s)}</span><span class="pill mono">${esc(shot.id)}</span>${t.chained_from_shot_id ? `<span class="pill">chained ← ${esc(shortId(t.chained_from_shot_id))}</span>` : ""}</div>
-        <div class="field"><div class="field-label">Takes (${takes.length})</div>${takesHtml}</div>
-        <div class="field"><div class="field-label">Action</div><div class="field-value">${esc(shot.description)}</div></div>
-        <div class="field"><div class="field-label">Camera</div><div class="field-value">${esc(shot.camera)}</div></div>
-        ${shot.vo_line ? `<div class="field"><div class="field-label">Voiceover</div><div class="field-value vo">“${esc(shot.vo_line)}”</div></div>` : ""}
-        <div class="field"><div class="field-label">Final Veo prompt</div><div class="prompt-box">${esc(shot.visual_prompt)}</div></div>
-        <div class="field"><div class="field-label">Scene</div><div class="field-value">${esc(sc.title || "")}: ${esc(sc.summary || "")}</div></div>`;
+    const video = $("fp-video");
+    if (S.playingTake) {
+      S.playingTake = null;
+      renderFinalPanel();
     }
-    // Bible tab
-    const b = $("inspector-bible");
-    if (!plan) {
-      b.innerHTML = `<div class="skel skel-line w60"></div><div class="skel skel-line w90"></div>`;
+    video.currentTime = seekTime;
+    video.play().catch(() => {});
+  });
+
+  // Hover time tooltip on timeline
+  const canvasEl = $("fp-timeline-canvas");
+  const tooltipEl = $("fp-time-tooltip");
+  if (canvasEl && tooltipEl) {
+    canvasEl.addEventListener("mousemove", (e) => {
+      const rect = canvasEl.getBoundingClientRect();
+      const inset = S.timelineInset || 16;
+      const clickX = e.clientX - rect.left - inset;
+      const t = Math.max(0, Math.min(S.totalDuration, clickX / S.timelineScale));
+      tooltipEl.textContent = fmtRulerTime(t);
+      tooltipEl.style.left = `${inset + Math.round(t * S.timelineScale)}px`;
+      tooltipEl.classList.remove("hidden");
+    });
+    canvasEl.addEventListener("mouseleave", () => {
+      tooltipEl.classList.add("hidden");
+    });
+  }
+
+  $("fp-back-to-cut-btn").addEventListener("click", () => {
+    S.playingTake = null;
+    const curVer = (S.job.versions || []).find((v) => v.version === S.activeVersion) || (S.job.versions || [])[0];
+    const finalCutUrl = (curVer && curVer.url) || S.job.final_video_url;
+    const video = $("fp-video");
+    video.src = finalCutUrl;
+    video.loop = false;
+    $("fp-take-overlay").classList.add("hidden");
+
+    if (S.selectedShotId) {
+      const item = S.shotTimings.find((t) => t.shot.id === S.selectedShotId);
+      if (item) video.currentTime = item.startTime;
+    }
+    video.play().catch(() => {});
+    renderShotDetail();
+  });
+
+  $("fp-close-btn").addEventListener("click", () => closeFinalCut());
+
+  window.addEventListener("resize", () => {
+    if (S.inFinalMode) renderFinalPanel();
+  });
+
+  if (window.ResizeObserver && $("fp-timeline-scroll")) {
+    const ro = new ResizeObserver(() => {
+      if (S.inFinalMode) renderFinalPanel();
+    });
+    ro.observe($("fp-timeline-scroll"));
+  }
+
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      if (!$("take-modal").classList.contains("hidden")) {
+        closeModal();
+      } else if (S.inFinalMode) {
+        closeFinalCut();
+      }
+    }
+  });
+
+  // Clicking take/shot thumbnails
+  document.addEventListener("click", (e) => {
+    if (e.target.closest("#final-panel")) return;
+
+    const takeEl = e.target.closest("[data-take]");
+    if (takeEl && takeEl.dataset.shot) {
+      const shotId = takeEl.dataset.shot;
+      const takeAttempt = Number(takeEl.dataset.take);
+      const hasCut = S.job && ((S.job.versions && S.job.versions.length) || S.job.final_video_url);
+      if (hasCut) {
+        openFinalCut({ shot: shotId, take: takeAttempt });
+      } else {
+        openTakeModal(shotId, takeAttempt);
+      }
       return;
     }
-    const style = plan.bible.style || {};
-    const chars = plan.bible.characters || [];
-    const prods = plan.bible.products || [];
-    const entity = (name, kind, desc, url) => `<div class="field"><div class="field-label">${kind}</div>
-      <div style="display:flex;gap:10px">${url ? `<img src="${esc(url)}" alt="" style="width:72px;height:72px;border-radius:9px;object-fit:cover;flex:none;border:1px solid var(--border)">` : ""}
-      <div><div style="font-weight:600">${esc(name)}</div><div class="field-value" style="font-size:12.5px">${esc(desc)}</div></div></div></div>`;
-    b.innerHTML = `
-      <div class="field"><div class="field-label">Palette</div><div class="palette palette-lg">${(style.palette || []).map((c) => `<span class="swatch" style="background:${esc(c)}"><span>${esc(c)}</span></span>`).join("")}</div></div>
-      <div class="field" style="margin-top:26px"><div class="field-label">Mood</div><div class="field-value">${esc(style.mood || "")}</div></div>
-      <div class="field"><div class="field-label">Lighting</div><div class="field-value">${esc(style.lighting || "")}</div></div>
-      <div class="field"><div class="field-label">Lens</div><div class="field-value">${esc(style.lens || "")}</div></div>
-      ${chars.map((c) => entity(c.name, "Character", c.appearance, (job.character_refs || {})[c.name] || c.reference_image)).join("")}
-      ${prods.map((p) => entity(p.name, "Product", p.description, (job.product_refs || {})[p.name] || p.reference_image)).join("")}`;
-  }
-  $("inspector-shot").addEventListener("click", (e) => {
-    const m = e.target.closest("[data-insp-take]");
-    if (m && S.selectedShot) selectShot(S.selectedShot, Number(m.dataset.inspTake));
-  });
 
-  // ---------- Director chat ----------
-  function renderDirector() {
-    const form = $("chat-form");
-    const input = $("chat-input");
-    const note = $("chat-note");
-    const job = S.job;
-    const sample = isSample();
-    const busy = BUSY.has(job.status);
-    const unfinished = job.status === "failed" && !job.final_video_url;
-    form.classList.toggle("locked", sample || busy || unfinished);
-    input.disabled = sample || busy || unfinished;
-    $("chat-send").disabled = sample || busy || unfinished;
-    if (sample) {
-      input.placeholder = "Sample productions are read-only";
-      note.innerHTML = `This is a finished sample, kept read-only. <a href="/" id="start-own">Start your own production →</a>`;
-    } else if (busy) {
-      input.placeholder = "The agent is working…";
-      note.textContent = "You can direct changes once this cut is finished.";
-    } else if (unfinished) {
-      input.placeholder = "Resume the production first";
-      note.textContent = "This production stopped before the first cut. Resume it above.";
-    } else {
-      input.placeholder = "Direct a change… e.g. “Make scene 2 warmer”";
-      note.textContent = "The agent re-shoots only the shots your note affects and cuts a new version.";
-    }
-  }
-  document.addEventListener("click", (e) => {
-    if (e.target.id === "start-own") {
-      e.preventDefault();
-      showHome();
-    }
-  });
-  $("chat-input").addEventListener("input", (e) => {
-    e.target.style.height = "auto";
-    e.target.style.height = `${Math.min(e.target.scrollHeight, 120)}px`;
-  });
-  $("chat-input").addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      $("chat-form").requestSubmit();
-    }
-  });
-  document.querySelectorAll("#chat-chips .chip").forEach((c) =>
-    c.addEventListener("click", () => {
-      if ($("chat-input").disabled) return;
-      $("chat-input").value = c.dataset.prompt;
-      $("chat-input").focus();
-    })
-  );
-  $("chat-form").addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const text = $("chat-input").value.trim();
-    if (!text || !S.jobId) return;
-    $("chat-send").disabled = true;
-    try {
-      const res = await fetch(`/api/jobs/${S.jobId}/chat`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: text }),
-      });
-      if (res.status === 409) {
-        const d = await res.json().catch(() => ({}));
-        S.localNotes.push({ text: d.detail || "I'm still working on the current cut. Send your note once it's finished.", t: new Date().toISOString() });
-        renderThread();
-        return;
+    const shotEl = e.target.closest("[data-shot]");
+    if (shotEl && shotEl.dataset.shot && !shotEl.closest(".regen-chips")) {
+      const shotId = shotEl.dataset.shot;
+      const hasCut = S.job && ((S.job.versions && S.job.versions.length) || S.job.final_video_url);
+      if (hasCut) {
+        openFinalCut({ shot: shotId, take: 1 });
+      } else {
+        openTakeModal(shotId, 1);
       }
-      if (!res.ok) {
-        const msg = await friendlyError(res, "Could not apply the note");
-        S.localNotes.push({ text: msg, t: new Date().toISOString() });
-        renderThread();
-        return;
-      }
-      $("chat-input").value = "";
-      $("chat-input").style.height = "auto";
-      S.userPicked = false;
-      await refresh();
-      connectStream();
-      $("thread").scrollTop = $("thread").scrollHeight;
-    } catch (err) {
-      S.localNotes.push({ text: `Could not reach the server: ${err.message}`, t: new Date().toISOString() });
-      renderThread();
-    } finally {
-      if (S.job) renderDirector();
     }
   });
 
@@ -1253,7 +2303,9 @@
     }
   }
 
-  // ---------- Boot ----------
+  // =========================================================
+  // Boot
+  // =========================================================
   loadJobs();
   route();
 })();

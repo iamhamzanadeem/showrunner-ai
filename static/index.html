@@ -10,181 +10,264 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/style.css?v=2">
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%237c6cff'/><path d='M12 9l12 7-12 7z' fill='white'/></svg>">
+  <link rel="stylesheet" href="/static/style.css?v=3">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%236355ff'/><path d='M12 9l12 7-12 7z' fill='white'/></svg>">
 </head>
 <body>
-  <header class="topbar">
-    <a class="brand" href="/" id="brand-link" aria-label="Showrunner AI home">
-      <span class="brand-mark"><svg viewBox="0 0 24 24" width="16" height="16"><path d="M8 5l11 7-11 7z" fill="currentColor"/></svg></span>
-      <span class="brand-name">Showrunner <span class="brand-ai">AI</span></span>
-    </a>
-    <div class="topbar-job hidden" id="topbar-job">
-      <span class="topbar-sep">/</span>
-      <span class="topbar-title" id="topbar-title">Untitled production</span>
-      <span class="pill" id="topbar-status">-</span>
-      <span class="pill pill-sample hidden" id="topbar-sample">Sample · read-only</span>
-    </div>
-    <div class="topbar-right">
-      <button class="icon-btn theme-toggle" id="theme-toggle" type="button" title="Toggle light / dark theme" aria-label="Toggle theme">
-        <svg class="icon-moon" viewBox="0 0 24 24" width="16" height="16"><path d="M20 14.5A8 8 0 019.5 4a8 8 0 1010.5 10.5z" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linejoin="round"/></svg>
-        <svg class="icon-sun" viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="4" stroke="currentColor" stroke-width="1.8" fill="none"/><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M5.3 18.7l1.4-1.4M17.3 6.7l1.4-1.4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
-      </button>
-      <span class="provider-chip" id="provider-chip" title="Active model provider"><span class="dot"></span><span id="provider-name">Connecting…</span></span>
-      <div class="menu-wrap">
-        <button class="btn btn-ghost" id="productions-btn" type="button">Productions <svg viewBox="0 0 24 24" width="14" height="14"><path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"/></svg></button>
-        <div class="menu hidden" id="productions-menu" role="menu"></div>
+  <div class="app-layout" id="app-layout">
+    <!-- ===================== LEFT SIDEBAR (~260px) ===================== -->
+    <aside class="sidebar" id="sidebar" aria-label="Sidebar navigation">
+      <div class="sidebar-header">
+        <a class="brand" href="/" id="brand-link" aria-label="Showrunner AI home">
+          <span class="brand-mark">
+            <svg viewBox="0 0 24 24" width="15" height="15"><path d="M8 5l11 7-11 7z" fill="currentColor"/></svg>
+          </span>
+          <span class="brand-name">Showrunner <span class="brand-ai">AI</span></span>
+        </a>
+        <button class="icon-btn sidebar-collapse-btn" id="sidebar-collapse-btn" type="button" title="Collapse sidebar" aria-label="Collapse sidebar">
+          <svg viewBox="0 0 24 24" width="16" height="16"><path d="M11 19l-7-7 7-7M19 19l-7-7 7-7" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
       </div>
-      <button class="btn btn-primary btn-sm" id="new-production-btn" type="button">
-        <svg viewBox="0 0 24 24" width="14" height="14"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
-        New production
-      </button>
-    </div>
-  </header>
 
-  <div class="notice hidden" id="notice-banner" role="status">
-    <svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2" fill="none"/><path d="M12 8v5M12 16.5v.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-    <span id="notice-text"></span>
-    <button type="button" class="notice-close" id="notice-close" aria-label="Dismiss">×</button>
-  </div>
+      <div class="sidebar-action">
+        <button class="btn btn-primary new-prod-btn" id="new-production-btn" type="button">
+          <svg viewBox="0 0 24 24" width="15" height="15"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+          New production
+        </button>
+      </div>
 
-  <!-- ===================== HOME ===================== -->
-  <main class="view view-home" id="view-home">
-    <section class="hero">
-      <div class="eyebrow"><span class="eyebrow-dot"></span>Agentic video studio · Gemini · Veo 3.1 · Gemini TTS · Lyria</div>
-      <h1>Your AI film crew.</h1>
-      <p class="hero-sub">Brief in, finished film out. A director agent plans every shot, renders it with Veo, has a Gemini critic review each take and reshoot what fails, then scores, voices and cuts the film.</p>
+      <div class="sidebar-section-head">Productions</div>
+      <div class="sidebar-nav" id="productions-list" role="list">
+        <!-- Rendered by JS -->
+      </div>
 
-      <form class="composer" id="brief-form" autocomplete="off">
-        <div class="composer-top">
-          <div class="segmented" role="tablist" aria-label="Production mode">
-            <button type="button" class="seg active" data-mode="ad" role="tab">Ad <span>30–45s · ~5 shots</span></button>
-            <button type="button" class="seg" data-mode="short_film" role="tab">Short film <span>~2.5 min · ~18 shots</span></button>
+      <div class="sidebar-footer">
+        <button class="icon-btn theme-toggle" id="theme-toggle" type="button" title="Toggle light / dark theme" aria-label="Toggle theme">
+          <svg class="icon-moon" viewBox="0 0 24 24" width="16" height="16"><path d="M20 14.5A8 8 0 019.5 4a8 8 0 1010.5 10.5z" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linejoin="round"/></svg>
+          <svg class="icon-sun" viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="4" stroke="currentColor" stroke-width="1.8" fill="none"/><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M5.3 18.7l1.4-1.4M17.3 6.7l1.4-1.4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+        </button>
+        <span class="provider-chip" id="provider-chip" title="Active model provider">
+          <span class="dot"></span><span id="provider-name">Connecting…</span>
+        </span>
+      </div>
+    </aside>
+
+    <!-- ===================== CENTER CHAT COLUMN ===================== -->
+    <main class="chat-column" id="chat-column">
+      <!-- Thin chat header -->
+      <header class="chat-header" id="chat-header">
+        <div class="chat-header-left">
+          <button class="icon-btn sidebar-expand-btn hidden" id="sidebar-expand-btn" type="button" title="Open sidebar" aria-label="Open sidebar">
+            <svg viewBox="0 0 24 24" width="16" height="16"><path d="M13 5l7 7-7 7M5 5l7 7-7 7" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+          <div class="chat-header-info">
+            <span class="chat-header-title" id="chat-header-title">Showrunner AI</span>
+            <span class="pill hidden" id="chat-header-status">-</span>
+            <span class="pill pill-sample hidden" id="chat-header-sample">Sample · read-only</span>
           </div>
-          <input type="hidden" id="selected-mode" value="ad">
         </div>
-        <textarea id="brief-input" rows="4" placeholder="Describe your film. e.g. “A 30-second ad for a hand-thrown ceramic coffee mug, morning light, slow and tactile, ending on the tagline ‘Made to be held’.”" required maxlength="4000"></textarea>
-        <div class="chips" id="example-chips">
-          <button type="button" class="chip" data-preset="ad-coffee">☕ Ceramic mug ad</button>
-          <button type="button" class="chip" data-preset="ad-sneaker">👟 Night-run sneaker ad</button>
-          <button type="button" class="chip" data-preset="film-scifi">🛰️ Sci-fi short</button>
-          <button type="button" class="chip" data-preset="film-lighthouse">🌊 Lighthouse drama</button>
+      </header>
+
+      <!-- Caps / Notice banner -->
+      <div class="notice hidden" id="notice-banner" role="status">
+        <svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2" fill="none"/><path d="M12 8v5M12 16.5v.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+        <span id="notice-text"></span>
+        <button type="button" class="notice-close" id="notice-close" aria-label="Dismiss">×</button>
+      </div>
+
+      <!-- Scrollable chat body -->
+      <div class="chat-scroll" id="chat-scroll">
+        <div class="chat-inner">
+          <!-- EMPTY STATE (route /) -->
+          <section class="empty-state-view" id="empty-state-view">
+            <div class="hero">
+              <div class="eyebrow"><span class="eyebrow-dot"></span>Gemini · Veo 3.1 · Gemini TTS · Lyria</div>
+              <h1>Your AI film crew.</h1>
+              <p class="hero-sub">Brief in, finished film out. A director agent plans every shot, renders it with Veo, has a Gemini critic review each take and reshoot what fails, then scores, voices and cuts the film.</p>
+            </div>
+
+            <!-- 5-step loop strip -->
+            <div class="loop-strip" aria-label="How the agent works">
+              <div class="loop-step">
+                <span class="loop-n">1</span>
+                <div><b>Plan</b><p>Script, scenes &amp; duration-snapped shots</p></div>
+              </div>
+              <div class="loop-step">
+                <span class="loop-n">2</span>
+                <div><b>Style bible</b><p>Character &amp; product anchor sheets</p></div>
+              </div>
+              <div class="loop-step">
+                <span class="loop-n">3</span>
+                <div><b>Render</b><p>Veo 3.1 chained keyframe animation</p></div>
+              </div>
+              <div class="loop-step accent">
+                <span class="loop-n">4</span>
+                <div><b>Critique &amp; reshoot</b><p>Gemini critic scores &amp; rewrites prompt</p></div>
+              </div>
+              <div class="loop-step">
+                <span class="loop-n">5</span>
+                <div><b>Score &amp; cut</b><p>Lyria score, TTS voiceover &amp; FFmpeg cut</p></div>
+              </div>
+            </div>
+
+            <!-- Sample gallery -->
+            <div class="gallery-section" id="sample-gallery">
+              <div class="section-head">
+                <h2>Sample productions</h2>
+                <p>Real end-to-end productions. Open one to see the full agent loop: every take, every critic verdict, every reshoot.</p>
+              </div>
+              <div class="gallery" id="gallery-cards">
+                <div class="gcard skeleton-card"><div class="skel skel-media"></div><div class="gcard-body"><div class="skel skel-line w60"></div><div class="skel skel-line w90"></div></div></div>
+                <div class="gcard skeleton-card"><div class="skel skel-media"></div><div class="gcard-body"><div class="skel skel-line w60"></div><div class="skel skel-line w90"></div></div></div>
+              </div>
+            </div>
+
+            <footer class="empty-footer">
+              Built for the Google Cloud AI Builder Cup 2026 · Cloud Run + Vertex AI
+            </footer>
+          </section>
+
+          <!-- JOB ROUTE VIEW (route /?job=<id>) -->
+          <section class="job-thread-view hidden" id="job-thread-view">
+            <!-- User brief message bubble -->
+            <div class="brief-container" id="brief-bubble-container"></div>
+            <!-- Agent block (step 1 placeholder with ported thread rendering) -->
+            <div class="agent-block" id="agent-block">
+              <div class="thread" id="thread"></div>
+            </div>
+          </section>
         </div>
-        <div class="file-list" id="file-preview-list"></div>
-        <div class="composer-bottom">
-          <label class="btn btn-ghost btn-sm attach" title="Optional product or character reference images">
-            <svg viewBox="0 0 24 24" width="15" height="15"><path d="M21 11.5l-8.6 8.6a5 5 0 01-7.1-7.1l8.6-8.6a3.4 3.4 0 014.8 4.8l-8.6 8.6a1.7 1.7 0 01-2.4-2.4l8-8" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round"/></svg>
-            Reference images
-            <input type="file" id="file-input" accept="image/png,image/jpeg,image/webp" multiple hidden>
-          </label>
-          <span class="limits-note" id="limits-note"></span>
-          <button type="submit" class="btn btn-primary btn-lg" id="submit-btn">
-            Start production
-            <svg viewBox="0 0 24 24" width="16" height="16"><path d="M5 12h14M13 6l6 6-6 6" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </div>
+
+      <!-- Bottom composer (pinned to bottom of chat column) -->
+      <div class="composer-container">
+        <div class="composer-wrap">
+          <form class="composer-box" id="composer-form" autocomplete="off">
+            <!-- Example chips (shown on empty state) -->
+            <div class="chips" id="example-chips">
+              <button type="button" class="chip" data-preset="ad-coffee">☕ Ceramic mug ad</button>
+              <button type="button" class="chip" data-preset="ad-sneaker">👟 Night-run sneaker ad</button>
+              <button type="button" class="chip" data-preset="film-scifi">🛰️ Sci-fi short</button>
+              <button type="button" class="chip" data-preset="film-lighthouse">🌊 Lighthouse drama</button>
+            </div>
+
+            <div class="composer-top" id="composer-top">
+              <div class="segmented" role="tablist" aria-label="Production mode">
+                <button type="button" class="seg active" data-mode="ad" role="tab">Ad <span>30–45s · ~5 shots</span></button>
+                <button type="button" class="seg" data-mode="short_film" role="tab">Short film <span>~2.5 min · ~18 shots</span></button>
+              </div>
+              <input type="hidden" id="selected-mode" value="ad">
+            </div>
+
+            <!-- Attached image previews -->
+            <div class="file-list" id="file-preview-list"></div>
+
+            <div class="composer-middle">
+              <textarea id="composer-input" rows="1" placeholder="Describe your film. e.g. “A 30-second ad for a hand-thrown ceramic coffee mug, morning light, slow and tactile…”" required maxlength="4000"></textarea>
+              <button type="submit" class="composer-send" id="composer-send" aria-label="Send message">
+                <svg viewBox="0 0 24 24" width="16" height="16"><path d="M5 12h14M13 6l6 6-6 6" stroke="currentColor" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              </button>
+            </div>
+
+            <div class="composer-bottom" id="composer-bottom">
+              <label class="btn btn-ghost btn-sm attach" id="attach-label" title="Optional product or character reference images">
+                <svg viewBox="0 0 24 24" width="15" height="15"><path d="M21 11.5l-8.6 8.6a5 5 0 01-7.1-7.1l8.6-8.6a3.4 3.4 0 014.8 4.8l-8.6 8.6a1.7 1.7 0 01-2.4-2.4l8-8" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round"/></svg>
+                Reference images
+                <input type="file" id="file-input" accept="image/png,image/jpeg,image/webp" multiple hidden>
+              </label>
+              <div class="composer-note" id="composer-note">
+                <span class="limits-note" id="limits-note"></span>
+              </div>
+            </div>
+          </form>
+        </div>
+      </div>
+    </main>
+
+    <!-- ===================== RIGHT FINAL PANEL ===================== -->
+    <aside class="final-panel hidden" id="final-panel" aria-label="Final cut inspector">
+      <!-- 1. Header -->
+      <div class="fp-header">
+        <div class="fp-header-left">
+          <div class="fp-title-group">
+            <h2 class="fp-title" id="fp-title">Final cut</h2>
+            <span class="fp-badge">Master Cut</span>
+          </div>
+          <div class="fp-version-tabs" id="fp-version-tabs"></div>
+        </div>
+        <div class="fp-header-right">
+          <a class="btn btn-ghost btn-sm fp-download-btn" id="fp-download-btn" href="#" download target="_blank">
+            <svg viewBox="0 0 24 24" width="14" height="14"><path d="M12 3v13M7 11l5 5 5-5M4 19h16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            Download MP4
+          </a>
+          <button class="icon-btn fp-close-btn" id="fp-close-btn" type="button" title="Close final cut panel" aria-label="Close">
+            <svg viewBox="0 0 24 24" width="16" height="16"><path d="M18 6L6 18M6 6l12 12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
           </button>
         </div>
-      </form>
-    </section>
-
-    <section class="loop-strip" aria-label="How the agent works">
-      <div class="loop-step"><span class="loop-n">1</span><div><b>Plan</b><p>Gemini writes the script, scenes and a duration-snapped shot list.</p></div></div>
-      <div class="loop-step"><span class="loop-n">2</span><div><b>Bible</b><p>Nano Banana draws character and product sheets that anchor every frame.</p></div></div>
-      <div class="loop-step"><span class="loop-n">3</span><div><b>Render</b><p>Veo 3.1 animates each keyframe, chaining last frame to first frame.</p></div></div>
-      <div class="loop-step accent"><span class="loop-n">4</span><div><b>Critique &amp; reshoot</b><p>A Gemini critic watches every take, scores it and rewrites the prompt.</p></div></div>
-      <div class="loop-step"><span class="loop-n">5</span><div><b>Score &amp; cut</b><p>Lyria score, Gemini TTS voiceover, captions and an FFmpeg master.</p></div></div>
-    </section>
-
-    <section class="gallery-section" id="sample-gallery">
-      <div class="section-head">
-        <h2>Made by the agent</h2>
-        <p>Real end-to-end productions. Open one to see the full agent loop: every take, every critic verdict, every reshoot.</p>
       </div>
-      <div class="gallery" id="gallery-cards">
-        <div class="gcard skeleton-card"><div class="skel skel-media"></div><div class="gcard-body"><div class="skel skel-line w60"></div><div class="skel skel-line w90"></div></div></div>
-        <div class="gcard skeleton-card"><div class="skel skel-media"></div><div class="gcard-body"><div class="skel skel-line w60"></div><div class="skel skel-line w90"></div></div></div>
-      </div>
-    </section>
 
-    <section class="recent-section hidden" id="recent-section">
-      <div class="section-head"><h2>Recent productions</h2></div>
-      <div class="recent-list" id="recent-list"></div>
-    </section>
-
-    <footer class="home-footer">Built for the Google Cloud AI Builder Cup 2026 by Hamza Nadeem &amp; Urooj Nadeem · Runs on Cloud Run + Vertex AI</footer>
-  </main>
-
-  <!-- ===================== WORKSPACE ===================== -->
-  <main class="view view-workspace hidden" id="view-workspace">
-    <!-- LEFT: agent thread -->
-    <section class="pane pane-thread" aria-label="Agent thread">
-      <div class="pane-head">
-        <div class="agent-id">
-          <span class="avatar avatar-agent"><svg viewBox="0 0 24 24" width="14" height="14"><path d="M8 5l11 7-11 7z" fill="currentColor"/></svg></span>
-          <div><b>Director agent</b><span class="agent-sub" id="agent-sub">Idle</span></div>
+      <!-- Scrollable content area inside panel -->
+      <div class="fp-content" id="fp-content">
+        <!-- 2. Large Video Player Stage -->
+        <div class="fp-stage">
+          <div class="fp-stage-inner">
+            <video id="fp-video" playsinline controls preload="metadata"></video>
+            <div class="fp-take-overlay hidden" id="fp-take-overlay">
+              <div class="fp-take-badge" id="fp-take-badge">Shot 4.2 · Take 1 · 0.46 rejected</div>
+              <button type="button" class="btn btn-primary btn-sm" id="fp-back-to-cut-btn">
+                <svg viewBox="0 0 24 24" width="13" height="13"><path d="M8 5l11 7-11 7z" fill="currentColor"/></svg>
+                Back to final cut
+              </button>
+            </div>
+          </div>
         </div>
-        <button class="icon-btn" id="jump-latest" type="button" title="Jump to latest"><svg viewBox="0 0 24 24" width="16" height="16"><path d="M12 5v14M6 13l6 6 6-6" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"/></svg></button>
-      </div>
-      <div class="thread" id="thread"></div>
-      <form class="director" id="chat-form" autocomplete="off">
-        <div class="director-chips" id="chat-chips">
-          <button type="button" class="chip chip-sm" data-prompt="Make scene 1 warmer, golden-hour light">Warmer scene 1</button>
-          <button type="button" class="chip chip-sm" data-prompt="Make the final shot more dramatic with a slow push-in">Dramatic ending</button>
-          <button type="button" class="chip chip-sm" data-prompt="Rewrite the last voiceover line to be shorter and punchier">Punchier last line</button>
-        </div>
-        <div class="director-box">
-          <textarea id="chat-input" rows="1" placeholder="Direct a change… e.g. “Make scene 2 warmer”"></textarea>
-          <button type="submit" class="send-btn" id="chat-send" aria-label="Send"><svg viewBox="0 0 24 24" width="16" height="16"><path d="M5 12h14M13 6l6 6-6 6" stroke="currentColor" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
-        </div>
-        <div class="director-note" id="chat-note">The agent re-shoots only the shots your note affects.</div>
-      </form>
-    </section>
 
-    <!-- CENTER: player + filmstrip -->
-    <section class="pane pane-stage" aria-label="Stage">
-      <div class="stage-head">
-        <div class="stage-label" id="stage-label">Final cut</div>
-        <div class="stage-actions">
-          <div class="versions" id="version-tabs"></div>
-          <button class="btn btn-ghost btn-sm hidden" id="show-final-btn" type="button">▶ Final film</button>
-          <a class="btn btn-ghost btn-sm hidden" id="download-btn" href="#" download>Download MP4</a>
-          <button class="icon-btn" id="toggle-inspector" type="button" title="Toggle inspector"><svg viewBox="0 0 24 24" width="16" height="16"><rect x="3" y="4" width="18" height="16" rx="2" stroke="currentColor" stroke-width="1.8" fill="none"/><path d="M15 4v16" stroke="currentColor" stroke-width="1.8"/></svg></button>
+        <!-- 3. Editor-style TIMELINE under the player -->
+        <div class="fp-timeline-section">
+          <div class="fp-timeline-scroll" id="fp-timeline-scroll">
+            <div class="fp-timeline-canvas" id="fp-timeline-canvas">
+              <!-- Scene blocks & shot clips track -->
+              <div class="fp-track" id="fp-track"></div>
+              <!-- Time ruler with ticks and labels -->
+              <div class="fp-ruler" id="fp-ruler"></div>
+              <!-- Playhead line -->
+              <div class="fp-playhead" id="fp-playhead">
+                <div class="fp-playhead-cap"></div>
+              </div>
+              <!-- Hover time tooltip -->
+              <div class="fp-time-tooltip hidden" id="fp-time-tooltip">0:00</div>
+            </div>
+          </div>
+
+          <!-- 4. KPI Line & Inspection Hint -->
+          <div class="fp-kpi-line" id="fp-kpi-line"></div>
+          <div class="fp-hint-line" id="fp-hint-line">Click a clip to inspect its takes and critic notes.</div>
+        </div>
+
+        <!-- 5. SHOT DETAIL strip (below timeline, appears when clip is selected) -->
+        <div class="fp-shot-detail hidden" id="fp-shot-detail">
+          <!-- Rendered dynamically by JS -->
         </div>
       </div>
-      <div class="player" id="player">
-        <video id="player-video" class="hidden" controls playsinline preload="metadata"></video>
-        <img id="player-image" class="hidden" alt="">
-        <div class="player-empty" id="player-empty">
-          <div class="skel skel-player"></div>
-          <div class="player-empty-text" id="player-empty-text">The film will appear here as the agent renders it.</div>
-        </div>
-        <div class="player-badge hidden" id="player-badge"></div>
-      </div>
-      <div class="progress-row" id="progress-row">
-        <div class="progress"><div class="progress-fill" id="progress-fill"></div></div>
-        <span class="progress-label" id="progress-label">Ready</span>
-      </div>
-      <div class="stats" id="stats"></div>
-      <div class="filmstrip-head">
-        <span>Timeline</span>
-        <span class="legend"><i class="lg lg-pass"></i>passed <i class="lg lg-flag"></i>best of takes <i class="lg lg-run"></i>rendering <i class="lg lg-wait"></i>queued</span>
-      </div>
-      <div class="filmstrip" id="filmstrip"></div>
-    </section>
-
-    <!-- RIGHT: inspector -->
-    <aside class="pane pane-inspector" id="inspector" aria-label="Inspector">
-      <div class="pane-head">
-        <div class="tabs" role="tablist">
-          <button class="tab active" data-tab="shot" type="button">Shot</button>
-          <button class="tab" data-tab="bible" type="button">Style bible</button>
-        </div>
-        <button class="icon-btn" id="close-inspector" type="button" title="Close inspector">×</button>
-      </div>
-      <div class="inspector-body" id="inspector-shot"></div>
-      <div class="inspector-body hidden" id="inspector-bible"></div>
     </aside>
-  </main>
+  </div>
 
-  <script src="/static/app.js?v=2"></script>
+  <!-- Lightbox Modal Player for takes & cut preview -->
+  <div class="modal hidden" id="take-modal" role="dialog" aria-modal="true" aria-label="Take inspector">
+    <div class="modal-backdrop" id="modal-backdrop"></div>
+    <div class="modal-dialog">
+      <div class="modal-head">
+        <div class="modal-title" id="modal-title">Take details</div>
+        <button type="button" class="modal-close" id="modal-close" aria-label="Close modal">×</button>
+      </div>
+      <div class="modal-media" id="modal-media">
+        <video id="modal-video" class="hidden" controls playsinline preload="metadata"></video>
+        <img id="modal-image" class="hidden" alt="">
+      </div>
+      <div class="modal-details" id="modal-details"></div>
+    </div>
+  </div>
+
+  <script src="/static/app.js?v=3"></script>
 </body>
 </html>
