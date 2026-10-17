@@ -122,7 +122,9 @@ class GoogleTTSProvider(BaseTTSProvider):
         try:
             # Same model: current Gemini TTS models also serve generate_content.
             fallback_model = self.model
-            tts_prompt = f"Say in a warm, confident, cinematic narrator voice at a natural, unhurried but not slow pace: {text}"
+            # Send ONLY the line: Gemini TTS on Vertex reads style prefixes such as
+            # "Say in a warm voice: ..." aloud verbatim, and rejects system_instruction.
+            tts_prompt = text
 
             speech_config = types.SpeechConfig(
                 voice_config=types.VoiceConfig(

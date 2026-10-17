@@ -44,6 +44,8 @@ async def test_tts_vertex_uses_generate_content_with_same_model(tmp_path: Path):
     assert Path(out).is_file()
     client.interactions.create.assert_not_called()
     assert client.models.generate_content.call_args.kwargs["model"] == "gemini-3.8-flash-tts"
+    # The line alone: a style prefix would be spoken aloud by the TTS model
+    assert client.models.generate_content.call_args.kwargs["contents"] == "Hello."
 
 
 @pytest.mark.asyncio
