@@ -100,3 +100,35 @@ async def test_keyframe_quota_failure_falls_back_to_text_to_video(tmp_path, monk
     await run_pipeline(job)
     assert job.status == JobStatus.completed
     assert ("shot_2_1", None) in clip_calls
+
+
+@pytest.mark.asyncio
+async def test_veo_safety_refusal_goes_text_to_video_then_still(tmp_path, monkeypatch):
+    from app.config import settings
+    from app.models import Job, JobStatus, VideoMode
+    from app.pipeline.orchestrator import run_pipeline
+    from app.providers.base import ContentFilteredError
+    from app.providers.mock import MockVideoProvider
+
+    monkeypatch.setattr(settings, "DATA_DIR", tmp_path / "data")
+    monkeypatch.setattr(settings, "MOCK_DELAY_S", 0.0)
+    monkeypatch.setattr(settings, "MAX_RETRIES", 1)
+    orig_clip = MockVideoProvider.generate_clip
+    calls = []
+
+    async def refuse(self, **kw):
+        calls.append((kw["shot_id"], kw["initial_frame"], kw["prompt"]))
+        if kw["shot_id"] == "shot_2_1":
+            raise ContentFilteredError("input image violates usage guidelines", input_image_rejected=True)
+        return await orig_clip(self, **kw)
+
+    monkeypatch.setattr(MockVideoProvider, "generate_clip", refuse)
+    job = Job(id="job_refusal1", brief="A 30s ad for Lumina smart glass.", mode=VideoMode.ad)
+    await run_pipeline(job)
+    assert job.status == JobStatus.completed  # job survives a safety refusal
+    s21 = [c for c in calls if c[0] == "shot_2_1"]
+    assert len(s21) == 2
+    assert s21[0][1] is not None and s21[1][1] is None  # second attempt: text-to-video
+    assert " | " in s21[1][2]  # bible specs appended to the text-only prompt
+    shot = next(s for sc in job.plan.scenes for s in sc.shots if s.id == "shot_2_1")
+    assert shot.is_flagged_fallback and shot.video_url.endswith("shot_2_1_still.mp4")

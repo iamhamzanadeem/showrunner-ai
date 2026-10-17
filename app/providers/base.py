@@ -70,6 +70,18 @@ class BaseImageProvider(ABC):
         pass
 
 
+class ContentFilteredError(RuntimeError):
+    """The video model refused or filtered a generation for safety/policy reasons.
+
+    input_image_rejected=True means the *first-frame image* was refused, so a retry
+    should render text-to-video instead of resubmitting the same image.
+    """
+
+    def __init__(self, message: str, input_image_rejected: bool = False):
+        super().__init__(message)
+        self.input_image_rejected = input_image_rejected
+
+
 class BaseVideoProvider(ABC):
     """Abstract interface for video clip generation (Veo image-to-video)."""
 

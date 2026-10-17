@@ -22,6 +22,7 @@ from app.models import (
 )
 from app.pipeline.assembler import assemble_video
 from app.pipeline.planner import run_planner, save_job_state
+from app.providers.base import ContentFilteredError
 from app.providers.factory import get_providers
 
 logger = logging.getLogger("showrunner.pipeline.orchestrator")
@@ -44,6 +45,39 @@ async def extract_last_frame(clip_path: Path, out_image_path: Path) -> Path:
     )
     await proc.wait()
     return out_image_path
+
+
+def _text_to_video_prompt(job: Job, shot) -> str:
+    """Prompt for a text-to-video fallback: the shot prompt plus the bible's entity specs so
+    the character still matches when no first-frame image can be used."""
+    plan = job.plan
+    extras = []
+    if plan:
+        for c in plan.bible.characters:
+            if not shot.characters_referenced or c.name in shot.characters_referenced:
+                extras.append(f"{c.name}: {c.appearance}")
+        for pr in plan.bible.products:
+            if pr.name in (shot.products_referenced or []):
+                extras.append(f"{pr.name}: {pr.description}")
+        style = plan.bible.style
+        extras.append(f"Look: {style.lighting}; {style.lens}; mood {style.mood}")
+    return shot.visual_prompt + (" | " + " | ".join(extras) if extras else "")
+
+
+async def make_still_clip(image_path: Path, duration_s: float, out_path: Path) -> Optional[Path]:
+    """Last-resort shot: a slow push-in on the keyframe (FFmpeg, no model cost)."""
+    frames = max(1, int(round(duration_s * 24)))
+    vf = (
+        "scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,"
+        f"zoompan=z='min(zoom+0.0008,1.12)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={frames}:s=1280x720:fps=24"
+    )
+    cmd = [
+        "ffmpeg", "-y", "-loop", "1", "-i", str(image_path),
+        "-vf", vf, "-t", f"{duration_s:.2f}", "-c:v", "libx264", "-pix_fmt", "yuv420p", str(out_path),
+    ]
+    proc = await asyncio.create_subprocess_exec(*cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    await proc.wait()
+    return out_path if out_path.is_file() and out_path.stat().st_size > 0 else None
 
 
 def _select_initial_frame(
@@ -242,6 +276,10 @@ async def _produce_shot(
         shot.veo_operation_attempt = None
         save_job_state(job)
 
+    # Set when Veo refuses/filters the first-frame image: later attempts go text-to-video.
+    text_only = False
+    last_kf_path: Optional[str] = None
+
     while attempt <= max_attempts:
         if resumed_clip:
             clip_path_str = resumed_clip
@@ -289,6 +327,7 @@ async def _produce_shot(
                         data={"shot_id": shot.id, "attempt": attempt, "error": str(kf_exc)},
                     )
                 if kf_path:
+                    last_kf_path = kf_path
                     keyframe_rel_url = f"/media/{job.id}/{Path(kf_path).name}"
                 elif first_frame_path:
                     keyframe_rel_url = shot.first_frame_url
@@ -306,9 +345,9 @@ async def _produce_shot(
                 )
 
                 clip_path_str = await providers.video.generate_clip(
-                    prompt=shot.visual_prompt,
+                    prompt=_text_to_video_prompt(job, shot) if text_only else shot.visual_prompt,
                     duration_s=shot.duration_s,
-                    initial_frame=_select_initial_frame(first_frame_path, kf_path),
+                    initial_frame=None if text_only else _select_initial_frame(first_frame_path, kf_path),
                     job_dir=job_dir,
                     shot_id=shot.id,
                     scene_num=scene.scene_number,
@@ -322,6 +361,9 @@ async def _produce_shot(
             except Exception as exc:  # provider failure for this attempt
                 last_error = exc
                 logger.warning("Attempt %d for %s failed: %s", attempt, shot.id, exc)
+                if isinstance(exc, ContentFilteredError) and exc.input_image_rejected and not text_only:
+                    text_only = True
+                    logger.info("Veo refused the first frame for %s; next attempt is text-to-video", shot.id)
                 await event_bus.publish(
                     job_id=job.id,
                     step="RETRY",  # never "ERROR": that is terminal for SSE subscribers
@@ -454,6 +496,39 @@ async def _produce_shot(
             data={"shot_id": shot.id, "score": best_critique.score, "fallback": True, "image_url": best_keyframe_url},
         )
         return
+
+    # No model clip at all (e.g. every attempt safety-filtered): keep the film whole with a
+    # slow push-in on the keyframe instead of failing the entire job.
+    # Only for safety refusals: outages stay fatal (and resumable) rather than becoming a slideshow.
+    still_src = last_kf_path or (str(first_frame_path) if first_frame_path else None)
+    if isinstance(last_error, ContentFilteredError) and still_src and Path(still_src).is_file():
+        still = await make_still_clip(Path(still_src), shot.duration_s, job_dir / f"{shot.id}_still.mp4")
+        if still:
+            fallback_critique = CritiqueResult(
+                shot_id=shot.id,
+                passed=False,
+                score=0.0,
+                reasons=[f"[fallback_still] Video model produced no clip ({last_error}); using an animated still."],
+                suggested_prompt_fix=None,
+            )
+            shot.status = ShotStatus.passed
+            shot.is_flagged_fallback = True
+            shot.best_critique = fallback_critique
+            shot.video_url = str(still)
+            shot.veo_operation_name = None
+            shot.veo_operation_attempt = None
+            if last_kf_path:
+                shot.image_url = f"/media/{job.id}/{Path(last_kf_path).name}"
+            save_job_state(job)
+            await event_bus.publish(
+                job_id=job.id,
+                step="CRITIC_FAIL",
+                message=f"No usable video for {shot.id} ({last_error}). Using an animated still so the production can finish.",
+                shot_id=shot.id,
+                scene_id=scene.id,
+                data={"shot_id": shot.id, "score": 0.0, "fallback": True, "image_url": shot.image_url},
+            )
+            return
 
     shot.status = ShotStatus.failed
     save_job_state(job)

@@ -8,7 +8,7 @@ from typing import Any, Callable, List, Optional
 from google.genai import types
 
 from app.config import settings
-from app.providers.base import BaseVideoProvider
+from app.providers.base import BaseVideoProvider, ContentFilteredError
 from app.providers.google.client import call_with_retry, get_genai_client
 from app.providers.google.image import _resolve_image_path, image_mime_type
 
@@ -187,13 +187,26 @@ class GoogleVideoProvider(BaseVideoProvider):
             op = await call_with_retry(client.operations.get, op)
 
         # Check for errors in completed operation
-        if getattr(op, "error", None):
-            raise RuntimeError(f"Veo video generation failed for shot {shot_id}: {op.error}")
+        err = getattr(op, "error", None)
+        if err:
+            msg = str(err)
+            if "usage guidelines" in msg or "violates" in msg or "safety" in msg.lower():
+                raise ContentFilteredError(
+                    f"Veo refused shot {shot_id}: {msg}",
+                    input_image_rejected="input image" in msg.lower(),
+                )
+            raise RuntimeError(f"Veo video generation failed for shot {shot_id}: {msg}")
 
         response = getattr(op, "response", None)
         if not response or not getattr(response, "generated_videos", None):
-            raise RuntimeError(
-                f"Veo operation completed but returned no generated videos for shot {shot_id}."
+            reasons = getattr(response, "rai_media_filtered_reasons", None) if response else None
+            filtered = getattr(response, "rai_media_filtered_count", None) if response else None
+            # A finished operation without videos means Veo's safety filters blocked the output
+            # (typically person/face related when animating a photoreal keyframe): the caller
+            # should retry text-to-video rather than resubmitting the same image.
+            raise ContentFilteredError(
+                f"Veo returned no video for shot {shot_id} (filtered: {reasons or filtered or 'unspecified'}).",
+                input_image_rejected=True,
             )
 
         gen_video = response.generated_videos[0]
