@@ -30,6 +30,10 @@ from app.models import (
     Job,
     JobStatus,
     JobSummaryResponse,
+    JobTakesResponse,
+    ShotTakes,
+    TakeCritique,
+    TakeInfo,
     VideoMode,
 )
 from app.pipeline.orchestrator import recover_interrupted_job, run_pipeline, run_refinement
@@ -293,6 +297,104 @@ async def create_job(request: Request) -> Dict[str, Any]:
     }
 
 
+def _job_summary(j: Job) -> JobSummaryResponse:
+    plan = j.plan
+    shots = [shot for scene in plan.scenes for shot in scene.shots] if plan else []
+    return JobSummaryResponse(
+        id=j.id,
+        title=plan.title if plan else None,
+        brief=j.brief,
+        mode=j.mode,
+        status=j.status,
+        created_at=j.created_at,
+        poster_url=j.poster_url,
+        final_video_url=j.final_video_url,
+        logline=plan.logline if plan else None,
+        duration_s=sum(shot.duration_s for shot in shots) if shots else None,
+        scene_count=len(plan.scenes) if plan else 0,
+        shot_count=len(shots),
+        take_count=sum(len(shot.attempts) for shot in shots),
+    )
+
+
+def _media_url(job_id: str, value: Optional[str]) -> Optional[str]:
+    """Normalizes stored asset references (``/media/...`` or ``data/jobs/<id>/x``) to media URLs."""
+    if not value:
+        return None
+    if value.startswith("/media/") or value.startswith("http"):
+        return value
+    return f"/media/{job_id}/{Path(value).name}"
+
+
+def _media_exists(job_id: str, url: Optional[str]) -> bool:
+    if not url or not url.startswith(f"/media/{job_id}/"):
+        return False
+    rel = url[len("/media/"):].split("?", 1)[0]
+    jobs_root = (settings.DATA_DIR / "jobs").resolve()
+    target = (jobs_root / rel).resolve()
+    return target.is_relative_to(jobs_root) and target.is_file()
+
+
+def build_job_takes(job: Job) -> JobTakesResponse:
+    """Per-shot take history (keyframe, clip, critic verdict) for the workspace UI."""
+    import re
+
+    shots_out: List[ShotTakes] = []
+    if not job.plan:
+        return JobTakesResponse(job_id=job.id)
+    for scene in job.plan.scenes:
+        for shot in scene.shots:
+            video_url = _media_url(job.id, shot.video_url)
+            accepted: Optional[int] = None
+            if video_url:
+                m = re.search(r"_att(\d+)\.mp4", video_url)
+                if m:
+                    accepted = int(m.group(1))
+            if accepted is None and shot.status.value in ("passed", "ready") and shot.attempts:
+                best = max(shot.attempts, key=lambda a: a.critique.score if a.critique else 0.0)
+                accepted = best.attempt_number
+            takes: List[TakeInfo] = []
+            for att in shot.attempts:
+                clip_url = _media_url(job.id, att.clip_url)
+                crit = att.critique
+                takes.append(
+                    TakeInfo(
+                        attempt=att.attempt_number,
+                        prompt=att.prompt,
+                        image_url=_media_url(job.id, att.image_url),
+                        clip_url=clip_url,
+                        created_at=att.created_at,
+                        critique=TakeCritique(
+                            score=crit.score,
+                            passed=crit.passed,
+                            reasons=crit.reasons,
+                            suggested_prompt_fix=crit.suggested_prompt_fix,
+                        )
+                        if crit
+                        else None,
+                        accepted=accepted == att.attempt_number,
+                        clip_available=_media_exists(job.id, clip_url),
+                    )
+                )
+            shots_out.append(
+                ShotTakes(
+                    shot_id=shot.id,
+                    scene_id=shot.scene_id,
+                    status=shot.status.value,
+                    duration_s=shot.duration_s,
+                    accepted_attempt=accepted,
+                    is_flagged_fallback=shot.is_flagged_fallback,
+                    chained_from_shot_id=shot.chained_from_shot_id,
+                    first_frame_url=_media_url(job.id, shot.first_frame_url),
+                    image_url=_media_url(job.id, shot.image_url),
+                    video_url=video_url,
+                    audio_url=_media_url(job.id, shot.audio_url),
+                    takes=takes,
+                )
+            )
+    return JobTakesResponse(job_id=job.id, shots=shots_out)
+
+
 @app.get("/api/jobs", response_model=List[JobSummaryResponse])
 async def list_jobs() -> List[JobSummaryResponse]:
     """Lists all recent video production jobs sorted by creation time descending."""
@@ -309,33 +411,13 @@ async def list_jobs() -> List[JobSummaryResponse]:
                         with open(job_json, "r", encoding="utf-8") as f:
                             data = json.load(f)
                             j = Job.model_validate(data)
-                            title = j.plan.title if j.plan else None
-                            results[j.id] = JobSummaryResponse(
-                                id=j.id,
-                                title=title,
-                                brief=j.brief,
-                                mode=j.mode,
-                                status=j.status,
-                                created_at=j.created_at,
-                                poster_url=j.poster_url,
-                                final_video_url=j.final_video_url,
-                            )
+                            results[j.id] = _job_summary(j)
                     except Exception:
                         pass
 
     # Merge in-memory cache
     for j_id, j in jobs_db.items():
-        title = j.plan.title if j.plan else None
-        results[j_id] = JobSummaryResponse(
-            id=j.id,
-            title=title,
-            brief=j.brief,
-            mode=j.mode,
-            status=j.status,
-            created_at=j.created_at,
-            poster_url=j.poster_url,
-            final_video_url=j.final_video_url,
-        )
+        results[j_id] = _job_summary(j)
 
     samples = sample_job_ids()
     summaries = list(results.values())
@@ -356,6 +438,15 @@ async def get_job(job_id: str) -> Job:
             detail=f"Job '{job_id}' not found.",
         )
     return job
+
+
+@app.get("/api/jobs/{job_id}/takes", response_model=JobTakesResponse)
+async def get_job_takes(job_id: str) -> JobTakesResponse:
+    """Every take of every shot: keyframe, clip, critic score/reasons/correction, accepted flag."""
+    job = load_job(job_id)
+    if not job:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Job '{job_id}' not found.")
+    return build_job_takes(job)
 
 
 @app.post("/api/jobs/{job_id}/chat", dependencies=[Depends(require_demo_token)])

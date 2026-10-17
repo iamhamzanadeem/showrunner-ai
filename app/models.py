@@ -227,6 +227,11 @@ class JobSummaryResponse(BaseModel):
     poster_url: Optional[str] = None
     final_video_url: Optional[str] = None
     is_sample: bool = False
+    logline: Optional[str] = None
+    duration_s: Optional[float] = None
+    scene_count: int = 0
+    shot_count: int = 0
+    take_count: int = 0
 
 
 class HealthResponse(BaseModel):
@@ -239,3 +244,41 @@ class HealthResponse(BaseModel):
     auth_required: bool = False
     limits: Optional[Dict[str, float]] = None
     sample_job_ids: List[str] = Field(default_factory=list)
+
+
+class TakeCritique(BaseModel):
+    score: float = 0.0
+    passed: bool = False
+    reasons: List[str] = Field(default_factory=list)
+    suggested_prompt_fix: Optional[str] = None
+
+
+class TakeInfo(BaseModel):
+    attempt: int
+    prompt: str = ""
+    image_url: Optional[str] = None
+    clip_url: Optional[str] = None
+    created_at: Optional[str] = None
+    critique: Optional[TakeCritique] = None
+    accepted: bool = False
+    clip_available: bool = False
+
+
+class ShotTakes(BaseModel):
+    shot_id: str
+    scene_id: str
+    status: str
+    duration_s: float
+    accepted_attempt: Optional[int] = None
+    is_flagged_fallback: bool = False
+    chained_from_shot_id: Optional[str] = None
+    first_frame_url: Optional[str] = None
+    image_url: Optional[str] = None
+    video_url: Optional[str] = None
+    audio_url: Optional[str] = None
+    takes: List[TakeInfo] = Field(default_factory=list)
+
+
+class JobTakesResponse(BaseModel):
+    job_id: str
+    shots: List[ShotTakes] = Field(default_factory=list)

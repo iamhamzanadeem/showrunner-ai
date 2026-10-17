@@ -101,6 +101,17 @@ The production process doesn't end with the first cut. Directors can issue natur
 
 ---
 
+## 🖥 The Agent Workspace
+
+The web UI works like a coding-agent workspace (Claude Code / Antigravity style), but for film:
+
+- **Agent thread (left)**: the director agent narrates the run as chat messages and tool cards. You see the plan (scenes and shot list), the visual bible (palette and character/product sheets), and every shot's takes with the critic verdict. A typical shot reads *Take 1 rejected (0.46): floating ring of fire → correction applied → Take 2 (0.74) accepted*. Then soundtrack and voiceover, the master cut, and director-chat refinements, which list the shots they will regenerate. Messages stream live over SSE; for finished jobs and read-only samples the thread is rebuilt from saved job state.
+- **Stage (centre)**: a large player (final cut, or the selected shot's take), run stats (takes, reshoots, average critic score), and a filmstrip timeline grouped by scene, with per-shot status: rendering, passed, best-of-N (flagged) or queued.
+- **Inspector (right, collapsible)**: the selected shot's action, camera, voiceover, final Veo prompt and all takes side by side with scores, reasons and corrections, plus the style bible.
+- Light theme by default; dark theme via the sun/moon toggle (saved in `localStorage`). Vanilla JS, no build step.
+
+---
+
 ## 🤖 Google Models & Services
 
 | Pipeline Role | Model ID | Environment Variable | API Surface |
@@ -288,11 +299,12 @@ MODE=apikey GEMINI_API_KEY="your-key" ./scripts/deploy.sh
 
 | Method | Endpoint | Description |
 | :--- | :--- | :--- |
-| `GET` | `/` | Serves the Showrunner Web Studio interface |
+| `GET` | `/` | Serves the agent workspace UI (landing page + `/?job=<id>&shot=<shot_id>` deep links) |
 | `GET` | `/api/health` | Service health, active provider configuration, and model IDs |
-| `GET` | `/api/jobs` | Lists recent productions with metadata and poster previews |
+| `GET` | `/api/jobs` | Lists recent productions (title, logline, runtime, scene/shot/take counts, poster); samples first |
 | `POST` | `/api/jobs` | Registers a new creative brief (JSON or multipart with ref images) |
 | `GET` | `/api/jobs/{id}` | Retrieves full state, scene specifications, shot attempts, and media URLs |
+| `GET` | `/api/jobs/{id}/takes` | Every take of every shot: keyframe, clip, critic score, reasons, correction, accepted flag |
 | `GET` | `/api/jobs/{id}/events` | Live Server-Sent Events (SSE) stream of agent cognition logs |
 | `POST` | `/api/jobs/{id}/chat` | Submits director instructions to refine a scene (409 if busy) |
 | `POST` | `/api/jobs/{id}/resume` | Resumes a failed/interrupted production, reusing sheets, audio and accepted shots |

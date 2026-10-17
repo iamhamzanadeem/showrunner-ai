@@ -164,3 +164,39 @@ def test_large_media_served_in_capped_ranges(client, monkeypatch):
     assert "content-length" not in r.headers or r.headers.get("transfer-encoding") == "chunked"
 
     assert client.get("/media/../secrets.txt").status_code == 404
+
+
+def test_takes_endpoint_exposes_every_take_and_summary_counts(client):
+    from app.models import CritiqueResult, ShotAttempt, ShotStatus
+
+    plan = _plan([8, 6])
+    shot = plan.scenes[0].shots[0]
+    shot.status = ShotStatus.passed
+    shot.video_url = "data/jobs/job_takes01/shot_1_1_att2.mp4"  # stored as a filesystem path
+    shot.image_url = "/media/job_takes01/shot_1_1_att2_keyframe.png"
+    shot.attempts = [
+        ShotAttempt(attempt_number=1, prompt="p1", image_url="/media/job_takes01/shot_1_1_att1_keyframe.png",
+                    clip_url="/media/job_takes01/shot_1_1_att1.mp4",
+                    critique=CritiqueResult(shot_id="shot_1_1", passed=False, score=0.52,
+                                            reasons=["[off_brief] wrong angle"], suggested_prompt_fix="use OTS")),
+        ShotAttempt(attempt_number=2, prompt="p2", image_url="/media/job_takes01/shot_1_1_att2_keyframe.png",
+                    clip_url="/media/job_takes01/shot_1_1_att2.mp4",
+                    critique=CritiqueResult(shot_id="shot_1_1", passed=True, score=0.74, reasons=["good"])),
+    ]
+    job = Job(id="job_takes01", brief="b", mode=VideoMode.short_film, status=JobStatus.completed, plan=plan)
+    save_job_state(job)
+    (settings.DATA_DIR / "jobs" / "job_takes01" / "shot_1_1_att2.mp4").write_bytes(b"x")
+
+    data = client.get("/api/jobs/job_takes01/takes").json()
+    s11 = next(s for s in data["shots"] if s["shot_id"] == "shot_1_1")
+    assert s11["video_url"] == "/media/job_takes01/shot_1_1_att2.mp4"
+    assert s11["accepted_attempt"] == 2
+    t1, t2 = s11["takes"]
+    assert t1["critique"]["score"] == 0.52 and t1["critique"]["suggested_prompt_fix"] == "use OTS"
+    assert not t1["accepted"] and not t1["clip_available"]
+    assert t2["accepted"] and t2["clip_available"]
+    assert client.get("/api/jobs/missing00/takes").status_code == 404
+
+    summary = next(j for j in client.get("/api/jobs").json() if j["id"] == "job_takes01")
+    assert summary["shot_count"] == 2 and summary["take_count"] == 2 and summary["scene_count"] == 2
+    assert summary["duration_s"] == 14 and summary["logline"] == "L"
