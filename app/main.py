@@ -363,6 +363,10 @@ async def chat_job_refinement(job_id: str, payload: ChatRequest) -> Dict[str, An
     job.status = JobStatus.generating
     save_job_state(job)
 
+    # Publish a non-terminal event before returning so SSE subscribers that connect right away
+    # do not stop at the previous version's DONE event.
+    await event_bus.publish(job_id=job.id, step="INFO", message=f"Director note received: \"{message[:80]}\"")
+
     # Launch refinement in background
     spawn_job_task(job.id, run_refinement(job, message))
 

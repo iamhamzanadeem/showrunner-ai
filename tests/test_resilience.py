@@ -149,3 +149,21 @@ async def test_sse_replay_continues_past_old_terminal_event():
     await bus.publish("job_x", "DONE", "v2 done")
     await t
     assert seen == ["DONE", "EDIT", "DONE"]
+
+
+def test_chat_publishes_non_terminal_event_before_returning():
+    import asyncio as _a
+    from app.events import event_bus
+
+    j = Job(
+        id="job_chatinfo01", brief="b", mode=VideoMode.ad, status=JobStatus.completed,
+        final_video_url="/media/job_chatinfo01/final.mp4",
+    )
+    save_job_state(j)
+    _a.run(event_bus.publish(job_id=j.id, step="DONE", message="v1 done"))
+    with TestClient(app) as client:
+        r = client.post(f"/api/jobs/{j.id}/chat", json={"message": "warmer"})
+        assert r.status_code == 200
+        history = client.portal.call(event_bus.get_history, j.id)
+        steps = [e.step for e in history]
+        assert "INFO" in steps[steps.index("DONE") + 1:]
