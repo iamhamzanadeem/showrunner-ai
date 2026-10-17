@@ -258,18 +258,42 @@ async def _produce_shot(
             )
 
             try:
-                kf_path = await providers.image.generate_keyframe(
-                    prompt=shot.visual_prompt,
-                    style=plan.bible.style,
-                    ref_image=shot.first_frame_url if first_frame_path else None,
-                    ref_images=_shot_reference_sheets(job, shot, limit=2 if first_frame_path else 3),
-                    job_dir=job_dir,
-                    shot_id=shot.id,
-                    scene_num=scene.scene_number,
-                    shot_num=s_idx + 1,
-                    attempt=attempt,
-                )
-                keyframe_rel_url = f"/media/{job.id}/{Path(kf_path).name}"
+                kf_path: Optional[str] = None
+                try:
+                    kf_path = await providers.image.generate_keyframe(
+                        prompt=shot.visual_prompt,
+                        style=plan.bible.style,
+                        ref_image=shot.first_frame_url if first_frame_path else None,
+                        ref_images=_shot_reference_sheets(job, shot, limit=2 if first_frame_path else 3),
+                        job_dir=job_dir,
+                        shot_id=shot.id,
+                        scene_num=scene.scene_number,
+                        shot_num=s_idx + 1,
+                        attempt=attempt,
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as kf_exc:
+                    # A keyframe failure (e.g. image-model 429) must not burn a whole attempt or
+                    # fail the job: Veo can still render from the chained frame or from text.
+                    logger.warning("Keyframe failed for %s attempt %d: %s", shot.id, attempt, kf_exc)
+                    await event_bus.publish(
+                        job_id=job.id,
+                        step="RETRY",  # never "ERROR": that is terminal for SSE subscribers
+                        message=(
+                            f"Keyframe for {shot.id} unavailable ({kf_exc}); rendering "
+                            f"{'from chained frame' if first_frame_path else 'text-to-video'} instead."
+                        ),
+                        shot_id=shot.id,
+                        scene_id=scene.id,
+                        data={"shot_id": shot.id, "attempt": attempt, "error": str(kf_exc)},
+                    )
+                if kf_path:
+                    keyframe_rel_url = f"/media/{job.id}/{Path(kf_path).name}"
+                elif first_frame_path:
+                    keyframe_rel_url = shot.first_frame_url
+                else:
+                    keyframe_rel_url = None
                 shot.image_url = keyframe_rel_url
 
                 await event_bus.publish(

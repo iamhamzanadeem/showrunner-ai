@@ -33,6 +33,8 @@ class Settings(BaseSettings):
     SR_MODEL_PLANNER: str = "gemini-3.8-flash"
     SR_MODEL_CRITIC: str = "gemini-3.8-flash"
     SR_MODEL_IMAGE: str = "gemini-3.1-flash-image"
+    # Used only when SR_MODEL_IMAGE keeps returning 429 RESOURCE_EXHAUSTED (empty = no fallback)
+    SR_MODEL_IMAGE_FALLBACK: str = "gemini-2.5-flash-image"
     SR_MODEL_VIDEO: str = "veo-3.1-fast-generate-001"
     SR_MODEL_TTS: str = "gemini-3.8-flash-tts"
     SR_TTS_VOICE: str = "Kore"

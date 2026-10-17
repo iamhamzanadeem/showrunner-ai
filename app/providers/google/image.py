@@ -111,6 +111,36 @@ class GoogleImageProvider(BaseImageProvider):
         self.project = project
         self.model = model or settings.SR_MODEL_IMAGE
 
+    async def _generate_with_fallback(self, client: Any, contents: List[Any], config: Any) -> Any:
+        """Calls the image model with patient 429 backoff; on persistent quota exhaustion
+        (Vertex dynamic shared quota for new image models is tight) falls back once to
+        SR_MODEL_IMAGE_FALLBACK."""
+        models = [self.model]
+        fallback = settings.SR_MODEL_IMAGE_FALLBACK
+        if fallback and fallback != self.model:
+            models.append(fallback)
+        last_exc: Optional[Exception] = None
+        for idx, model_id in enumerate(models):
+            def _call_nano_banana(model_id: str = model_id):
+                return client.models.generate_content(
+                    model=model_id,
+                    contents=contents,
+                    config=config,
+                )
+
+            try:
+                return await call_with_retry(_call_nano_banana, max_retries=4)
+            except Exception as exc:
+                last_exc = exc
+                status = str(getattr(exc, "status", "")).upper()
+                is_quota = getattr(exc, "code", None) == 429 or status == "RESOURCE_EXHAUSTED"
+                if not is_quota or idx == len(models) - 1:
+                    raise
+                logger.warning(
+                    "Image model %s quota exhausted; falling back to %s", model_id, models[idx + 1]
+                )
+        raise last_exc  # pragma: no cover
+
     async def generate_keyframe(
         self,
         prompt: str,
@@ -185,14 +215,7 @@ class GoogleImageProvider(BaseImageProvider):
             temperature=0.7,
         )
 
-        def _call_nano_banana():
-            return client.models.generate_content(
-                model=self.model,
-                contents=contents,
-                config=config,
-            )
-
-        resp = await call_with_retry(_call_nano_banana)
+        resp = await self._generate_with_fallback(client, contents, config)
         saved = _save_image_from_response(resp, out_path)
         if not saved:
             raise RuntimeError(
@@ -240,14 +263,7 @@ class GoogleImageProvider(BaseImageProvider):
                 )
                 contents.append(part)
 
-        def _call_nano_banana_ref():
-            return client.models.generate_content(
-                model=self.model,
-                contents=contents,
-                config=config,
-            )
-
-        resp = await call_with_retry(_call_nano_banana_ref)
+        resp = await self._generate_with_fallback(client, contents, config)
         saved = _save_image_from_response(resp, out_path)
         if not saved:
             raise RuntimeError(

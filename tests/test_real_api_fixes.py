@@ -68,3 +68,33 @@ async def test_veo_vertex_sets_generate_audio_and_studio_maps_model(tmp_path: Pa
             assert kwargs["config"].generate_audio is False
         else:
             assert kwargs["config"].generate_audio is None
+
+
+@pytest.mark.asyncio
+async def test_keyframe_quota_failure_falls_back_to_text_to_video(tmp_path, monkeypatch):
+    from app.config import settings
+    from app.models import Job, JobStatus, VideoMode
+    from app.pipeline.orchestrator import run_pipeline
+    from app.providers.mock import MockImageProvider, MockVideoProvider
+
+    monkeypatch.setattr(settings, "DATA_DIR", tmp_path / "data")
+    monkeypatch.setattr(settings, "MOCK_DELAY_S", 0.0)
+    orig_kf = MockImageProvider.generate_keyframe
+    orig_clip = MockVideoProvider.generate_clip
+    clip_calls = []
+
+    async def kf_429(self, **kw):
+        if kw["shot_id"] == "shot_2_1":
+            raise RuntimeError("429 RESOURCE_EXHAUSTED")
+        return await orig_kf(self, **kw)
+
+    async def rec_clip(self, **kw):
+        clip_calls.append((kw["shot_id"], kw["initial_frame"]))
+        return await orig_clip(self, **kw)
+
+    monkeypatch.setattr(MockImageProvider, "generate_keyframe", kf_429)
+    monkeypatch.setattr(MockVideoProvider, "generate_clip", rec_clip)
+    job = Job(id="job_kf429", brief="A 30s ad for Lumina smart glass.", mode=VideoMode.ad)
+    await run_pipeline(job)
+    assert job.status == JobStatus.completed
+    assert ("shot_2_1", None) in clip_calls
