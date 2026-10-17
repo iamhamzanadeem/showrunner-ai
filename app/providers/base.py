@@ -101,6 +101,8 @@ class BaseCriticProvider(ABC):
         shot: Shot,
         bible: Bible,
         attempt: int = 1,
+        reference_images: Optional[List[str]] = None,
+        previous_frame: Optional[str] = None,
     ) -> CritiqueResult:
         """Evaluates video clip against shot specification and visual bible."""
         pass

@@ -12,6 +12,7 @@ from app.config import settings
 from app.models import Bible, CritiqueResult, Shot
 from app.providers.base import BaseCriticProvider
 from app.providers.google.client import call_with_retry, get_genai_client
+from app.providers.google.image import _resolve_image_path, image_mime_type
 
 logger = logging.getLogger("showrunner.providers.google.critic")
 
@@ -73,6 +74,8 @@ class GoogleCriticProvider(BaseCriticProvider):
         shot: Shot,
         bible: Bible,
         attempt: int = 1,
+        reference_images: Optional[List[str]] = None,
+        previous_frame: Optional[str] = None,
     ) -> CritiqueResult:
         client = get_genai_client(
             api_key=self.api_key,
@@ -114,6 +117,53 @@ class GoogleCriticProvider(BaseCriticProvider):
             file_ref = await call_with_retry(_upload)
             contents.append(file_ref)
 
+        # Attach up to 3 reference images
+        if reference_images:
+            ref_idx = 0
+            for ref in reference_images:
+                if ref_idx >= 3:
+                    break
+                ref_p = _resolve_image_path(ref)
+                if not ref_p or not ref_p.is_file():
+                    logger.warning("Critic reference sheet could not be resolved: %s", ref)
+                    continue
+                try:
+                    with open(ref_p, "rb") as f:
+                        sheet_bytes = f.read()
+                    mime = image_mime_type(ref_p)
+                    ref_idx += 1
+                    contents.append(
+                        types.Part.from_text(
+                            text=f"REFERENCE SHEET {ref_idx} (character/product identity to match):"
+                        )
+                    )
+                    contents.append(
+                        types.Part.from_bytes(data=sheet_bytes, mime_type=mime)
+                    )
+                except Exception as exc:
+                    logger.warning("Failed to load reference sheet %s: %s", ref_p, exc)
+
+        # Attach optional previous frame for continuity
+        if previous_frame:
+            prev_p = _resolve_image_path(previous_frame)
+            if not prev_p or not prev_p.is_file():
+                logger.warning("Critic previous frame could not be resolved: %s", previous_frame)
+            else:
+                try:
+                    with open(prev_p, "rb") as f:
+                        prev_bytes = f.read()
+                    prev_mime = image_mime_type(prev_p)
+                    contents.append(
+                        types.Part.from_text(
+                            text="PREVIOUS SHOT LAST FRAME (continuity reference):"
+                        )
+                    )
+                    contents.append(
+                        types.Part.from_bytes(data=prev_bytes, mime_type=prev_mime)
+                    )
+                except Exception as exc:
+                    logger.warning("Failed to load previous frame %s: %s", prev_p, exc)
+
         # Build detailed critique context
         char_specs = "\n".join(
             [f"- {c.name}: {c.appearance} (Role: {c.role or 'N/A'})" for c in bible.characters]
@@ -148,6 +198,10 @@ Registered Characters:
 
 Registered Products / Assets:
 {prod_specs}
+
+Reference & Continuity Instructions:
+- Compare identity/costume/product design against the reference sheets and flag mismatches with [drift]/[wrong_product].
+- Compare opening of the clip with the previous frame for [continuity] when provided.
 
 Provide your structured critique evaluation. Score from 0.0 to 1.0 (pass threshold >= {settings.SR_CRITIC_PASS_SCORE}).
 """

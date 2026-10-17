@@ -1011,6 +1011,8 @@ class MockCriticProvider(BaseCriticProvider):
         shot: Shot,
         bible: Bible,
         attempt: int = 1,
+        reference_images: Optional[List[str]] = None,
+        previous_frame: Optional[str] = None,
     ) -> CritiqueResult:
         if settings.MOCK_DELAY_S > 0:
             await asyncio.sleep(min(0.2, settings.MOCK_DELAY_S))

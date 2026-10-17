@@ -283,6 +283,8 @@ async def _produce_shot(
                 shot=shot,
                 bible=plan.bible,
                 attempt=attempt,
+                reference_images=_shot_reference_sheets(job, shot, limit=3),
+                previous_frame=str(first_frame_path) if first_frame_path and first_frame_path.exists() else None,
             )
         except asyncio.CancelledError:
             raise
@@ -824,6 +826,12 @@ async def run_refinement(job: Job, user_message: str) -> None:
 
     except Exception as exc:
         logger.exception("Error in refinement orchestration for job %s", job.id)
+        # Shots that failed to reshoot keep their previous accepted clip from the last version
+        if job.plan:
+            for sc in job.plan.scenes:
+                for sh in sc.shots:
+                    if sh.status != ShotStatus.passed and sh.video_url and Path(sh.video_url).is_file():
+                        sh.status = ShotStatus.passed
         job.status = JobStatus.completed
         job.error = str(exc)
         save_job_state(job)
