@@ -208,21 +208,27 @@
   }
 
   // =========================================================
-  // Jobs List & Gallery
+  // Jobs List & Recent Projects
   // =========================================================
   async function loadJobs() {
     try {
       const res = await fetch("/api/jobs");
-      S.jobs = await res.json();
+      const list = await res.json();
+      S.jobs = (Array.isArray(list) ? list : []).sort((a, b) => {
+        const ta = a && a.created_at ? new Date(a.created_at).getTime() : 0;
+        const tb = b && b.created_at ? new Date(b.created_at).getTime() : 0;
+        return tb - ta;
+      });
     } catch (e) {
       S.jobs = [];
     }
     renderSidebarList();
-    renderGallery();
+    renderRecentProjects();
   }
 
   function renderSidebarList() {
     const container = $("productions-list");
+    if (!container) return;
     if (!S.jobs.length) {
       container.innerHTML = `<div class="sidebar-empty" style="padding:14px 10px;color:var(--muted);font-size:12.5px">No productions yet.</div>`;
       return;
@@ -234,13 +240,11 @@
         const title = esc(j.title || j.brief.slice(0, 42));
         const mode = j.mode === "short_film" ? "Short film" : "Ad";
         const date = fmtRelativeDate(j.created_at);
-        const sampleTag = j.is_sample ? `<span class="tag-sample">Sample</span>` : "";
 
         return `
           <button type="button" class="sidebar-job-item ${active}" data-job="${esc(j.id)}">
             <div class="sji-top">
               <span class="sji-title">${title}</span>
-              ${sampleTag}
             </div>
             <div class="sji-sub">
               <span>${mode}</span>
@@ -252,34 +256,56 @@
       .join("");
   }
 
-  function renderGallery() {
-    const samples = S.jobs.filter((j) => j.is_sample && j.poster_url);
-    const el = $("gallery-cards");
-    if (!samples.length) {
-      $("sample-gallery").classList.add("hidden");
+  function renderRecentProjects() {
+    const el = $("recent-grid");
+    if (!el) return;
+    const completed = S.jobs.filter((j) => j.status === "completed" || j.poster_url);
+    const section = $("recent-section");
+    if (!completed.length) {
+      if (section) section.classList.add("hidden");
       return;
     }
-    $("sample-gallery").classList.remove("hidden");
-    el.innerHTML = samples
-      .map(
-        (j) => `
-        <button type="button" class="gcard" data-job="${esc(j.id)}">
-          <div class="gcard-media">
-            <img src="${esc(j.poster_url || "")}" alt="" loading="lazy">
-            <span class="gcard-kind">${j.mode === "short_film" ? "Short film" : "Ad"}</span>
-            <span class="gcard-play">${ICON.play} Open production</span>
-          </div>
-          <div class="gcard-body">
-            <div class="gcard-title">${esc(j.title || j.id)}</div>
-            <div class="gcard-logline">${esc(j.logline || j.brief)}</div>
-            <div class="gcard-meta">
-              <span class="pill">${fmtDur(j.duration_s)}</span>
-              <span class="pill">${j.shot_count} shots</span>
-              <span class="pill pill-sample">${j.take_count} takes reviewed by the critic</span>
+    if (section) section.classList.remove("hidden");
+
+    // Guarantee the 2 sample films (Skerry Rock short film, AURA ad) are included whenever in the list
+    const sampleJobs = completed.filter((j) => S.sampleIds.has(j.id) || j.is_sample);
+    const userJobs = completed.filter((j) => !S.sampleIds.has(j.id) && !j.is_sample);
+    const neededUser = Math.max(0, 6 - sampleJobs.length);
+    const pool = [...userJobs.slice(0, neededUser), ...sampleJobs];
+    pool.sort((a, b) => {
+      const ta = a && a.created_at ? new Date(a.created_at).getTime() : 0;
+      const tb = b && b.created_at ? new Date(b.created_at).getTime() : 0;
+      return tb - ta;
+    });
+
+    el.innerHTML = pool
+      .map((j) => {
+        const title = esc(j.title || j.brief.slice(0, 42));
+        const mode = j.mode === "short_film" ? "Short film" : "Ad";
+        const dur = j.duration_s ? fmtDur(j.duration_s) : "";
+        const metaStr = dur ? `${mode} · ${dur}` : mode;
+
+        const thumbHtml = j.poster_url
+          ? `<img src="${esc(j.poster_url)}" alt="" loading="lazy">`
+          : `<div class="recent-tile-thumb-placeholder">
+               <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                 <rect x="2" y="2" width="20" height="20" rx="4"></rect>
+                 <polygon points="10 8 16 12 10 16 10 8" fill="currentColor"></polygon>
+               </svg>
+             </div>`;
+
+        return `
+          <button type="button" class="recent-tile" data-job="${esc(j.id)}">
+            <div class="recent-tile-thumb">
+              ${thumbHtml}
             </div>
-          </div>
-        </button>`
-      )
+            <div class="recent-tile-body">
+              <div class="recent-tile-title">${title}</div>
+              <div class="recent-tile-meta">${metaStr}</div>
+            </div>
+          </button>
+        `;
+      })
       .join("");
   }
 
@@ -288,6 +314,18 @@
     const card = e.target.closest("[data-job]");
     if (card) {
       openJob(card.dataset.job);
+      return;
+    }
+    const presetCard = e.target.closest("[data-preset]");
+    if (presetCard) {
+      const p = PRESETS[presetCard.dataset.preset];
+      if (p) {
+        const input = $("composer-input");
+        input.value = p.text;
+        setMode(p.mode);
+        resizeTextarea(input);
+        input.focus();
+      }
       return;
     }
     if (e.target.id === "start-own") {
@@ -320,13 +358,11 @@
 
     $("empty-state-view").classList.remove("hidden");
     $("job-thread-view").classList.add("hidden");
-    $("example-chips").classList.remove("hidden");
     $("composer-top").classList.remove("hidden");
     $("attach-label").classList.remove("hidden");
 
     $("chat-header-title").textContent = "Showrunner AI";
     $("chat-header-status").classList.add("hidden");
-    $("chat-header-sample").classList.add("hidden");
 
     document.title = "Showrunner AI · Your AI film crew";
     renderLimits();
@@ -381,17 +417,6 @@
     document.querySelectorAll(".seg").forEach((b) => b.classList.toggle("active", b.dataset.mode === mode));
   }
   document.querySelectorAll(".seg").forEach((b) => b.addEventListener("click", () => setMode(b.dataset.mode)));
-
-  document.querySelectorAll("#example-chips .chip").forEach((c) =>
-    c.addEventListener("click", () => {
-      const p = PRESETS[c.dataset.preset];
-      if (!p) return;
-      $("composer-input").value = p.text;
-      setMode(p.mode);
-      resizeTextarea($("composer-input"));
-      $("composer-input").focus();
-    })
-  );
 
   function resizeTextarea(el) {
     el.style.height = "auto";
@@ -537,13 +562,11 @@
 
     $("empty-state-view").classList.add("hidden");
     $("job-thread-view").classList.remove("hidden");
-    $("example-chips").classList.add("hidden");
     $("composer-top").classList.add("hidden");
     $("attach-label").classList.add("hidden");
 
     $("chat-header-title").textContent = "Loading production…";
     $("chat-header-status").classList.add("hidden");
-    $("chat-header-sample").classList.add("hidden");
 
     $("brief-bubble-container").innerHTML = "";
     $("thread").innerHTML = threadSkeleton();
@@ -715,8 +738,6 @@
     st.textContent = busy ? job.status : job.status === "completed" ? "completed" : job.status;
     st.className = `pill ${busy ? "run" : job.status === "completed" ? "ok" : job.status === "failed" ? "bad" : ""}`;
     st.classList.remove("hidden");
-
-    $("chat-header-sample").classList.toggle("hidden", !isSample());
 
     // Auto-expand thinking block if busy, unless user explicitly toggled it
     if (!S.userToggledThinking) {
@@ -990,7 +1011,7 @@
             <div class="bible-ref-card">
               ${r.url ? `<img src="${esc(r.url)}" alt="" loading="lazy">` : '<div class="skel" style="width:44px;height:44px;border-radius:6px;flex:none"></div>'}
               <div class="bible-ref-info">
-                <div class="bible-ref-name">${esc(r.name)} <span class="tag-sample" style="font-size:10px">${esc(r.kind)}</span></div>
+                <div class="bible-ref-name">${esc(r.name)} <span class="tag-ref-kind" style="font-size:10px">${esc(r.kind)}</span></div>
                 <div class="bible-ref-desc">${esc(r.desc || "")}</div>
               </div>
             </div>`

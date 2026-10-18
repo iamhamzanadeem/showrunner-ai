@@ -63,7 +63,6 @@
           <div class="chat-header-info">
             <span class="chat-header-title" id="chat-header-title">Showrunner AI</span>
             <span class="pill hidden" id="chat-header-status">-</span>
-            <span class="pill pill-sample hidden" id="chat-header-sample">Sample · read-only</span>
           </div>
         </div>
       </header>
@@ -83,42 +82,54 @@
             <div class="hero">
               <div class="eyebrow"><span class="eyebrow-dot"></span>Gemini · Veo 3.1 · Gemini TTS · Lyria</div>
               <h1>Your AI film crew.</h1>
-              <p class="hero-sub">Brief in, finished film out. A director agent plans every shot, renders it with Veo, has a Gemini critic review each take and reshoot what fails, then scores, voices and cuts the film.</p>
+              <p class="hero-sub">Brief in, finished film out. An agentic studio that plans, shoots, critiques and cuts your film.</p>
             </div>
 
-            <!-- 5-step loop strip -->
-            <div class="loop-strip" aria-label="How the agent works">
-              <div class="loop-step">
-                <span class="loop-n">1</span>
-                <div><b>Plan</b><p>Script, scenes &amp; duration-snapped shots</p></div>
-              </div>
-              <div class="loop-step">
-                <span class="loop-n">2</span>
-                <div><b>Style bible</b><p>Character &amp; product anchor sheets</p></div>
-              </div>
-              <div class="loop-step">
-                <span class="loop-n">3</span>
-                <div><b>Render</b><p>Veo 3.1 chained keyframe animation</p></div>
-              </div>
-              <div class="loop-step accent">
-                <span class="loop-n">4</span>
-                <div><b>Critique &amp; reshoot</b><p>Gemini critic scores &amp; rewrites prompt</p></div>
-              </div>
-              <div class="loop-step">
-                <span class="loop-n">5</span>
-                <div><b>Score &amp; cut</b><p>Lyria score, TTS voiceover &amp; FFmpeg cut</p></div>
+            <!-- Example prompt cards (2x2 grid) -->
+            <div class="presets-section" id="presets-section">
+              <div class="preset-cards-grid" id="preset-cards-grid">
+                <button type="button" class="preset-card" data-preset="ad-coffee">
+                  <div class="preset-card-top">
+                    <span class="preset-card-icon">☕</span>
+                    <span class="preset-card-tag">Ad</span>
+                  </div>
+                  <div class="preset-card-title">Ceramic mug ad</div>
+                  <div class="preset-card-preview">Soft morning light, tactile close-ups, steam curling, made to be held…</div>
+                </button>
+                <button type="button" class="preset-card" data-preset="ad-sneaker">
+                  <div class="preset-card-top">
+                    <span class="preset-card-icon">👟</span>
+                    <span class="preset-card-tag">Ad</span>
+                  </div>
+                  <div class="preset-card-title">Night-run sneaker ad</div>
+                  <div class="preset-card-preview">Rain-slick city streets, neon reflections, kinetic tracking shots…</div>
+                </button>
+                <button type="button" class="preset-card" data-preset="film-scifi">
+                  <div class="preset-card-top">
+                    <span class="preset-card-icon">🛰️</span>
+                    <span class="preset-card-tag">Short film</span>
+                  </div>
+                  <div class="preset-card-title">Sci-fi short</div>
+                  <div class="preset-card-preview">Abandoned ice colony, solitary scout, ominous decoded signal…</div>
+                </button>
+                <button type="button" class="preset-card" data-preset="film-lighthouse">
+                  <div class="preset-card-top">
+                    <span class="preset-card-icon">🌊</span>
+                    <span class="preset-card-tag">Short film</span>
+                  </div>
+                  <div class="preset-card-title">Lighthouse drama</div>
+                  <div class="preset-card-preview">Storm failure, solitary keeper, improvised lantern beam…</div>
+                </button>
               </div>
             </div>
 
-            <!-- Sample gallery -->
-            <div class="gallery-section" id="sample-gallery">
+            <!-- Recent projects grid (up to 6) -->
+            <div class="recent-section" id="recent-section">
               <div class="section-head">
-                <h2>Sample productions</h2>
-                <p>Real end-to-end productions. Open one to see the full agent loop: every take, every critic verdict, every reshoot.</p>
+                <h2>Recent projects</h2>
               </div>
-              <div class="gallery" id="gallery-cards">
-                <div class="gcard skeleton-card"><div class="skel skel-media"></div><div class="gcard-body"><div class="skel skel-line w60"></div><div class="skel skel-line w90"></div></div></div>
-                <div class="gcard skeleton-card"><div class="skel skel-media"></div><div class="gcard-body"><div class="skel skel-line w60"></div><div class="skel skel-line w90"></div></div></div>
+              <div class="recent-grid" id="recent-grid">
+                <!-- Rendered dynamically by JS from /api/jobs -->
               </div>
             </div>
 
@@ -143,14 +154,6 @@
       <div class="composer-container">
         <div class="composer-wrap">
           <form class="composer-box" id="composer-form" autocomplete="off">
-            <!-- Example chips (shown on empty state) -->
-            <div class="chips" id="example-chips">
-              <button type="button" class="chip" data-preset="ad-coffee">☕ Ceramic mug ad</button>
-              <button type="button" class="chip" data-preset="ad-sneaker">👟 Night-run sneaker ad</button>
-              <button type="button" class="chip" data-preset="film-scifi">🛰️ Sci-fi short</button>
-              <button type="button" class="chip" data-preset="film-lighthouse">🌊 Lighthouse drama</button>
-            </div>
-
             <div class="composer-top" id="composer-top">
               <div class="segmented" role="tablist" aria-label="Production mode">
                 <button type="button" class="seg active" data-mode="ad" role="tab">Ad <span>30–45s · ~5 shots</span></button>
