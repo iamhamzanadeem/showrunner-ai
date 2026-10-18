@@ -9,7 +9,7 @@
 [![Built with Gemini](https://img.shields.io/badge/Google%20GenAI-Gemini%20%C2%B7%20Veo%20%C2%B7%20Lyria-4285F4.svg)](https://cloud.google.com/vertex-ai)
 
 ### 🔴 Live demo: **[https://showrunner-ai-jdakbjo4ea-uc.a.run.app](https://showrunner-ai-jdakbjo4ea-uc.a.run.app)**
-Open it, browse the **sample gallery** (a real 30s ad and a real ~2.5 min short film made end-to-end by the agent), or type a brief to start your own tiny production. There's no login. Public jobs are capped to keep costs safe (see [Public demo limits](#public-demo-limits)).
+Open it, browse the **sample gallery** (a real 30s ad and a real ~2.5 min short film made end-to-end by the agent), or type a brief to start your own production (full-length ads and short films). There's no login. Public jobs are capped to keep costs safe (see [Public demo limits](#public-demo-limits)).
 
 Showrunner AI is an autonomous, agentic AI video production studio. It transforms a single creative brief (and optional reference images) into a fully assembled, broadcast-ready film with continuous camera movement, visual consistency, professional voiceover, ducked soundtrack, burned-in subtitles, and targeted scene-level chat refinement.
 
@@ -274,11 +274,11 @@ The live link is intentionally open (no password) so judges can use it. Abuse an
 
 | Variable | Deployed | Purpose |
 | --- | --- | --- |
-| `MAX_JOBS_PER_DAY` | `60` | Global cap on new productions, chat refinements and resumes per UTC day. |
-| `MAX_JOBS_PER_IP_PER_DAY` | `8` | Per-client cap. IPs are stored only as salted SHA-256 hashes (Firestore `usage/{day}`, or `usage.json` in file mode). |
-| `MAX_SHOTS_PER_JOB` | `4` | The planner is told the limit, then the plan is hard-trimmed (the ending is kept). |
-| `MAX_RUNTIME_S` | `30` | Max film runtime for public jobs. |
-| `MAX_RETRIES` | `1` | Critic reshoots per shot. |
+| `MAX_JOBS_PER_DAY` | `200` | Global cap on new productions, chat refinements and resumes per UTC day. |
+| `MAX_JOBS_PER_IP_PER_DAY` | `30` | Per-client cap. IPs are stored only as salted SHA-256 hashes (Firestore `usage/{day}`, or `usage.json` in file mode). |
+| `MAX_SHOTS_PER_JOB` | `25` | The planner is told the limit, then the plan is hard-trimmed (the ending is kept). |
+| `MAX_RUNTIME_S` | `180` | Max film runtime for public jobs. |
+| `MAX_RETRIES` | `2` | Critic reshoots per shot. |
 | `MAX_PARALLEL_SCENES` | `2` | Concurrent scene renders per job. |
 | `SAMPLE_JOB_IDS` | ad + short film | Pre-rendered productions shown first in the gallery. They are read-only (no chat or resume). |
 | `CORS_ORIGINS` | `*` | Allowed origins; credentials are never allowed cross-origin. |

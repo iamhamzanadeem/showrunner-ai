@@ -16,11 +16,11 @@ SA_NAME="${SA_NAME:-showrunner-sa}"
 MODE="${MODE:-vertex}"          # Options: 'vertex' (ADC via Workload Identity) or 'apikey' (Secret Manager)
 DEMO_MOCK="${DEMO_MOCK:-0}"     # Set to 1 to deploy in mock mode (zero paid API cost)
 # Public-demo abuse protection (no password: judges get an open link)
-MAX_JOBS_PER_DAY="${MAX_JOBS_PER_DAY:-60}"              # global generations per UTC day
-MAX_JOBS_PER_IP_PER_DAY="${MAX_JOBS_PER_IP_PER_DAY:-8}"  # per visitor IP per UTC day
-MAX_SHOTS_PER_JOB="${MAX_SHOTS_PER_JOB:-4}"              # shot cap for public jobs
-MAX_RUNTIME_S="${MAX_RUNTIME_S:-30}"                     # runtime cap (seconds) for public jobs
-MAX_RETRIES="${MAX_RETRIES:-1}"                          # critic re-renders per shot
+MAX_JOBS_PER_DAY="${MAX_JOBS_PER_DAY:-200}"             # global generations per UTC day
+MAX_JOBS_PER_IP_PER_DAY="${MAX_JOBS_PER_IP_PER_DAY:-30}"  # per visitor IP per UTC day
+MAX_SHOTS_PER_JOB="${MAX_SHOTS_PER_JOB:-25}"             # shot cap for public jobs
+MAX_RUNTIME_S="${MAX_RUNTIME_S:-180}"                    # runtime cap (seconds) for public jobs
+MAX_RETRIES="${MAX_RETRIES:-2}"                          # critic re-renders per shot
 MAX_INSTANCES="${MAX_INSTANCES:-2}"
 CONCURRENCY="${CONCURRENCY:-20}"                         # SSE streams are cheap; FFmpeg is the CPU hog
 SAMPLE_JOB_IDS="${SAMPLE_JOB_IDS:-}"                     # read-only showcase jobs (comma-separated)
