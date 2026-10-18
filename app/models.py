@@ -244,6 +244,7 @@ class HealthResponse(BaseModel):
     auth_required: bool = False
     limits: Optional[Dict[str, float]] = None
     sample_job_ids: List[str] = Field(default_factory=list)
+    job_store: str = "file"
 
 
 class TakeCritique(BaseModel):

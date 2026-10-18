@@ -38,6 +38,7 @@ from app.models import (
 )
 from app.pipeline.orchestrator import recover_interrupted_job, run_pipeline, run_refinement
 from app.pipeline.planner import save_job_state
+from app.job_store import get_store
 from app.security import (
     auth_required,
     consume_daily_quota,
@@ -97,16 +98,13 @@ def _is_stale(job: Job) -> bool:
 
 def recover_interrupted_jobs() -> int:
     """On startup, marks jobs left in-flight by a previous process as interrupted (Fix #7)."""
-    jobs_dir = settings.DATA_DIR / "jobs"
-    if not jobs_dir.exists():
-        return 0
     recovered = 0
-    for job_json in jobs_dir.glob("*/job.json"):
-        try:
-            job = Job.model_validate(json.loads(job_json.read_text(encoding="utf-8")))
-        except Exception as exc:
-            logger.warning("Skipping unreadable job file %s: %s", job_json, exc)
-            continue
+    try:
+        jobs = get_store().list_jobs()
+    except Exception as exc:
+        logger.warning("Could not list jobs for recovery: %s", exc)
+        return 0
+    for job in jobs:
         if job.id in _running_jobs or not _is_stale(job):
             continue  # possibly still running on another Cloud Run instance
         if recover_interrupted_job(job):
@@ -126,15 +124,14 @@ def load_job(job_id: str) -> Optional[Job]:
     if job_id in jobs_db and job_id in _running_jobs:
         return jobs_db[job_id]
 
-    # Otherwise re-read disk: another instance may be producing (or have finished) it.
-    job_file = settings.DATA_DIR / "jobs" / job_id / "job.json"
-    if job_file.exists():
-        try:
-            with open(job_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                job = Job.model_validate(data)
-        except Exception:
-            return jobs_db.get(job_id)
+    # Otherwise re-read the store (Firestore or disk): another instance may be producing
+    # (or have finished) it.
+    try:
+        job = get_store().load(job_id)
+    except Exception as exc:
+        logger.warning("Job store read failed for %s: %s", job_id, exc)
+        return jobs_db.get(job_id)
+    if job is not None:
         # Lazy recovery of a job whose owner instance died (see _is_stale).
         if settings.RECOVERY_STALE_S > 0 and _is_stale(job) and recover_interrupted_job(job):
             save_job_state(job)
@@ -187,6 +184,7 @@ async def get_health() -> HealthResponse:
             "max_runtime_s": settings.MAX_RUNTIME_S,
         },
         sample_job_ids=sorted(sample_job_ids()),
+        job_store=settings.SR_JOB_STORE,
     )
 
 
@@ -400,20 +398,20 @@ async def list_jobs() -> List[JobSummaryResponse]:
     """Lists all recent video production jobs sorted by creation time descending."""
     results: Dict[str, JobSummaryResponse] = {}
 
-    # Scan persisted jobs on disk
-    jobs_dir = settings.DATA_DIR / "jobs"
-    if jobs_dir.exists():
-        for job_path in jobs_dir.iterdir():
-            if job_path.is_dir():
-                job_json = job_path / "job.json"
-                if job_json.exists():
-                    try:
-                        with open(job_json, "r", encoding="utf-8") as f:
-                            data = json.load(f)
-                            j = Job.model_validate(data)
-                            results[j.id] = _job_summary(j)
-                    except Exception:
-                        pass
+    # Persisted jobs: Firestore (summary fields only) or job.json files on disk
+    store = get_store()
+    try:
+        if hasattr(store, "list_summaries"):
+            for doc in store.list_summaries():
+                try:
+                    results[doc["id"]] = JobSummaryResponse(**{k: v for k, v in doc.items() if k != "updated_at"})
+                except Exception:
+                    pass
+        else:
+            for j in store.list_jobs():
+                results[j.id] = _job_summary(j)
+    except Exception as exc:
+        logger.warning("Job store listing failed: %s", exc)
 
     # Merge in-memory cache
     for j_id, j in jobs_db.items():

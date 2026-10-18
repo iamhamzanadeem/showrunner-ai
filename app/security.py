@@ -74,8 +74,8 @@ def consume_daily_quota(request: Optional[Request] = None) -> None:
     """Counts one generation (new job, refinement or resume) for today (UTC).
 
     Raises 429 with a friendly message when either the global MAX_JOBS_PER_DAY cap or the
-    per-client MAX_JOBS_PER_IP_PER_DAY cap is reached. Counters live in DATA_DIR/usage.json
-    (on the GCS-mounted volume in Cloud Run, so they survive restarts).
+    per-client MAX_JOBS_PER_IP_PER_DAY cap is reached. Counters live in Firestore
+    usage/{day} (SR_JOB_STORE=firestore) or DATA_DIR/usage.json.
     """
     cap = settings.MAX_JOBS_PER_DAY or 0
     ip_cap = settings.MAX_JOBS_PER_IP_PER_DAY or 0
@@ -83,20 +83,8 @@ def consume_daily_quota(request: Optional[Request] = None) -> None:
         return
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     key = _ip_key(client_ip(request))
-    with _usage_lock:
-        path = _usage_file()
-        data: dict = {}
-        try:
-            if path.exists():
-                data = json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
-            data = {}
-        day = data.get(today)
-        if not isinstance(day, dict):  # legacy format: {"YYYY-MM-DD": count}
-            day = {"total": int(day or 0), "ips": {}}
-        total = int(day.get("total", 0))
-        ips = day.get("ips") or {}
-        mine = int(ips.get(key, 0))
+
+    def decide(total: int, mine: int) -> None:
         if cap > 0 and total >= cap:
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
@@ -113,6 +101,31 @@ def consume_daily_quota(request: Optional[Request] = None) -> None:
                     "Please come back tomorrow (UTC) - the sample films in the gallery are always available."
                 ),
             )
+
+    from app.job_store import get_store
+
+    store = get_store()
+    if hasattr(store, "consume_usage"):
+        # Firestore: usage/{day} checked and incremented in one transaction (atomic across
+        # Cloud Run instances).
+        store.consume_usage(today, key, decide)
+        return
+
+    with _usage_lock:
+        path = _usage_file()
+        data: dict = {}
+        try:
+            if path.exists():
+                data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            data = {}
+        day = data.get(today)
+        if not isinstance(day, dict):  # legacy format: {"YYYY-MM-DD": count}
+            day = {"total": int(day or 0), "ips": {}}
+        total = int(day.get("total", 0))
+        ips = day.get("ips") or {}
+        mine = int(ips.get(key, 0))
+        decide(total, mine)
         ips[key] = mine + 1
         data = {today: {"total": total + 1, "ips": ips}}
         path.parent.mkdir(parents=True, exist_ok=True)

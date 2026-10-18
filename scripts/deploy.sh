@@ -25,6 +25,8 @@ MAX_INSTANCES="${MAX_INSTANCES:-2}"
 CONCURRENCY="${CONCURRENCY:-20}"                         # SSE streams are cheap; FFmpeg is the CPU hog
 SAMPLE_JOB_IDS="${SAMPLE_JOB_IDS:-}"                     # read-only showcase jobs (comma-separated)
 SAMPLES_DIR="${SAMPLES_DIR:-./data/jobs}"                # local job dirs to upload as samples
+JOB_STORE="${JOB_STORE:-firestore}"                      # job state store: firestore | file
+FIRESTORE_LOCATION="${FIRESTORE_LOCATION:-nam5}"
 # Optional budget alert (requires billing.budgets permissions on the billing account)
 BILLING_ACCOUNT="${BILLING_ACCOUNT:-}"
 BUDGET_AMOUNT="${BUDGET_AMOUNT:-150}"
@@ -57,6 +59,7 @@ gcloud services enable \
   cloudbuild.googleapis.com \
   storage.googleapis.com \
   secretmanager.googleapis.com \
+  firestore.googleapis.com \
   billingbudgets.googleapis.com \
   --project="${PROJECT_ID}"
 
@@ -101,6 +104,20 @@ gcloud storage buckets add-iam-policy-binding "gs://${BUCKET}" \
   --role="roles/storage.objectAdmin" \
   --quiet >/dev/null
 
+# Firestore: job state, job list and usage counters (SR_JOB_STORE=firestore)
+if [[ "${JOB_STORE}" == "firestore" ]]; then
+  if ! gcloud firestore databases describe --database="(default)" --project="${PROJECT_ID}" >/dev/null 2>&1; then
+    echo "==> Creating Firestore (Native mode) database in ${FIRESTORE_LOCATION}..."
+    gcloud firestore databases create --database="(default)" --location="${FIRESTORE_LOCATION}" \
+      --type=firestore-native --project="${PROJECT_ID}" --quiet >/dev/null
+  fi
+  gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
+    --member="serviceAccount:${SA_EMAIL}" \
+    --role="roles/datastore.user" \
+    --condition=None \
+    --quiet >/dev/null
+fi
+
 # ------------------------------------------------------------------------------
 # 3b. Upload read-only sample productions (gallery) to the media bucket
 # ------------------------------------------------------------------------------
@@ -125,7 +142,7 @@ fi
 # ------------------------------------------------------------------------------
 DEPLOY_SECRETS_ARG=()
 # SAMPLE_JOB_IDS is passed ;-separated because gcloud splits --set-env-vars on commas.
-LIMIT_VARS="MAX_JOBS_PER_DAY=${MAX_JOBS_PER_DAY},MAX_JOBS_PER_IP_PER_DAY=${MAX_JOBS_PER_IP_PER_DAY},MAX_SHOTS_PER_JOB=${MAX_SHOTS_PER_JOB},MAX_RUNTIME_S=${MAX_RUNTIME_S},MAX_RETRIES=${MAX_RETRIES},MAX_PARALLEL_SCENES=2,RECOVERY_STALE_S=1200,SAMPLE_JOB_IDS=${SAMPLE_JOB_IDS//,/;}"
+LIMIT_VARS="MAX_JOBS_PER_DAY=${MAX_JOBS_PER_DAY},MAX_JOBS_PER_IP_PER_DAY=${MAX_JOBS_PER_IP_PER_DAY},MAX_SHOTS_PER_JOB=${MAX_SHOTS_PER_JOB},MAX_RUNTIME_S=${MAX_RUNTIME_S},MAX_RETRIES=${MAX_RETRIES},MAX_PARALLEL_SCENES=2,RECOVERY_STALE_S=1200,SR_JOB_STORE=${JOB_STORE},SAMPLE_JOB_IDS=${SAMPLE_JOB_IDS//,/;}"
 
 if [[ "${DEMO_MOCK}" == "1" ]]; then
   echo "==> Configuring DEMO_MOCK mode (zero model cost)..."

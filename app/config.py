@@ -22,6 +22,12 @@ class Settings(BaseSettings):
     GOOGLE_GENAI_USE_VERTEXAI: bool = False
 
     DATA_DIR: Path = Path("./data")
+    # Job state store: "file" (DATA_DIR/jobs/<id>/job.json; default for local + tests) or
+    # "firestore" (Cloud Firestore is the source of truth; job.json is kept as a mirror).
+    SR_JOB_STORE: Literal["file", "firestore"] = "file"
+    SR_FIRESTORE_DATABASE: str = "(default)"
+    SR_FIRESTORE_JOBS_COLLECTION: str = "jobs"
+    SR_FIRESTORE_USAGE_COLLECTION: str = "usage"
     HOST: str = "0.0.0.0"
     PORT: int = 8080
 

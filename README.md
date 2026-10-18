@@ -124,6 +124,9 @@ The web UI works like a coding-agent workspace (Claude Code / Antigravity style)
 | **Soundtrack & Score (≤30s)** | `lyria-3-clip-preview` | `SR_MODEL_MUSIC` | Interactions API (Vertex, `global`) |
 | **Soundtrack & Score (>30s, up to 180s)** | `lyria-3-pro-preview` | `SR_MODEL_MUSIC_LONG` | Interactions API (Vertex, `global`) |
 | **Keyframe fallback on 429** | `gemini-2.5-flash-image` | `SR_MODEL_IMAGE_FALLBACK` | `generate_content` image modality |
+| **Job state, job list & usage counters** | Cloud Firestore (Native, `nam5`) on a Firebase project | `SR_JOB_STORE=firestore` | `google-cloud-firestore` (batched writes, transactions) |
+| **Media (keyframes, clips, VO, score, final cuts)** | Cloud Storage | `DATA_DIR=/data` | Cloud Storage FUSE volume on Cloud Run |
+| **Hosting** | Cloud Run | `scripts/deploy.sh` | Container built with Cloud Build |
 
 Veo runs in `us-central1` at 720p (`generate_audio=False`; VO and score are generated separately). Gemini, Nano Banana, TTS and Lyria run on the Vertex `global` endpoint.
 
@@ -148,8 +151,11 @@ flowchart LR
         EventBus["InMemoryEventBus (SSE Streams)"]
         Orchestrator["Agent Production Orchestrator"]
         Assembler["FFmpeg Video Assembly Engine"]
-        Storage["State & Media Store (/data)"]
+        Storage["Media Store (/data, Cloud Storage)"]
+        JobStore["Job Store (app/job_store.py)"]
     end
+
+    Firestore[("Cloud Firestore\njobs/{id} · jobs/{id}/takes/{shot} · usage/{day}")]
 
     subgraph Providers ["Provider Abstraction Layer"]
         MockProvider["Mock Engine (Pillow, FFmpeg lavfi, Offline)"]
@@ -165,6 +171,9 @@ flowchart LR
     Orchestrator --> Assembler
     Assembler --> Storage
     Storage -->|Static Media Streaming| UI_Player
+    Orchestrator -->|save_job_state: one batched write| JobStore
+    API_Endpoints -->|job list, state, takes| JobStore
+    JobStore --> Firestore
 ```
 
 ---
@@ -234,14 +243,21 @@ Showrunner AI is packaged to run on **Google Cloud Run** with persistent Cloud S
 flowchart LR
     Judge["Browser (public, no login)"] -->|HTTPS + SSE| CR["Cloud Run: showrunner-ai\nmax 2 instances · concurrency 20\nsession affinity · CPU always on"]
     CR -->|Vertex AI, service account showrunner-sa| Models["Gemini 3.8 Flash · Nano Banana · Veo 3.1 Fast · Gemini TTS · Lyria 3"]
-    CR -->|Cloud Storage FUSE /data| GCS[("gs://showrunner-ai-1017h-showrunner-media\njob.json · clips · final.mp4 · usage.json")]
+    CR -->|Firestore client, roles/datastore.user| FS[("Cloud Firestore (Native, nam5)\njobs · jobs/*/takes · usage")]
+    CR -->|Cloud Storage FUSE /data| GCS[("gs://showrunner-ai-1017h-showrunner-media\nclips · keyframes · final.mp4 · job.json mirror")]
     Budget["Billing budget $150\nalerts 50/90/100%"] -.-> CR
 ```
 
 - **Runtime**: one FastAPI container serving the UI, REST and SSE. Jobs run in-process as asyncio tasks, so `--no-cpu-throttling` is set.
-- **Storage**: `DATA_DIR=/data` is a GCS FUSE mount, so jobs, media, finished films and usage counters survive restarts and are shared by both instances.
+- **Job state (Firestore)**: with `SR_JOB_STORE=firestore` (set by `deploy.sh`), Cloud Firestore is the source of truth for job state, the sidebar/gallery job list and the daily usage counters. The project is also registered as a Firebase project.
+  - `jobs/{job_id}` holds the summary fields the sidebar lists (title, logline, status, mode, runtime, scene/shot/take counts, reshoots, average critic score, versions, timestamps) plus `state`: the full job (brief, plan, style bible, shots, versions, chat, Veo operation ids) minus the take history.
+  - `jobs/{job_id}/takes/{shot_id}` holds every take of that shot (prompt, keyframe, clip, critic score, reasons, correction). Takes live in a subcollection so the job document stays far below the 1 MiB limit.
+  - Every `save_job_state` writes the job document and the changed takes documents in one atomic batch. Unchanged takes are not rewritten.
+  - `usage/{YYYY-MM-DD}` holds `total` plus hashed per-IP counts, checked and incremented in a Firestore transaction, so the caps hold across both instances.
+  - `scripts/backfill_firestore.py` imports existing `job.json` files. Locally and in tests, `SR_JOB_STORE=file` (the default) keeps everything in `DATA_DIR`.
+- **Media storage**: `DATA_DIR=/data` is a GCS FUSE mount for keyframes, clips, audio and finished films. `job.json` is still written there as a mirror and is read only for jobs that have no Firestore document.
 - **Scaling**: at most 2 instances (`--max-instances=2`, concurrency 20). The event bus is in-memory per instance, so `--session-affinity` keeps a browser on the instance running its job. If a request lands on the other instance, it reads job state from the bucket. A job is only treated as interrupted (and made resumable) once it has had no update for `RECOVERY_STALE_S` (20 min), so a new instance never fails its sibling's live job.
-- **Identity**: dedicated service account `showrunner-sa` with only `roles/aiplatform.user` (project) and `roles/storage.objectAdmin` (media bucket). No API keys.
+- **Identity**: dedicated service account `showrunner-sa` with only `roles/aiplatform.user` and `roles/datastore.user` (project) and `roles/storage.objectAdmin` (media bucket). No API keys.
 - **SSE**: streams replay job history, then send keepalives every 15s. The client dedupes replayed events on reconnect.
 - **Large media**: Cloud Run rejects sized HTTP/1 responses over 32 MiB. Files over 24 MB (a 2.5 min film is ~39 MB) are served in byte ranges of up to 16 MB, which video players request in sequence. Plain downloads are streamed with chunked encoding.
 
@@ -250,7 +266,7 @@ flowchart LR
 - On startup, jobs left mid-flight by a previous process are marked `failed` ("Interrupted by server restart"); interrupted chat refinements fall back to the last completed version. Failed jobs show a **Resume production** button (`POST /api/jobs/{id}/resume`).
 - Each shot retries provider errors, then accepts its best-scoring clip; only a shot with no usable clip fails the job, and sibling scenes are cancelled immediately to avoid further paid renders.
 - The Veo operation id is persisted on each shot (`veo_operation_name`); the Veo launch call is never auto-retried (no duplicate paid jobs). Only 5xx and 429 errors are retried, with jittered backoff.
-- `job.json` is written atomically (temp file + `os.replace`).
+- Job state is written atomically: one Firestore batch (job document plus takes), and `job.json` via temp file + `os.replace`.
 
 ### Public demo limits
 
@@ -259,7 +275,7 @@ The live link is intentionally open (no password) so judges can use it. Abuse an
 | Variable | Deployed | Purpose |
 | --- | --- | --- |
 | `MAX_JOBS_PER_DAY` | `25` | Global cap on new productions, chat refinements and resumes per UTC day. |
-| `MAX_JOBS_PER_IP_PER_DAY` | `3` | Per-client cap. IPs are stored only as salted SHA-256 hashes in `usage.json`. |
+| `MAX_JOBS_PER_IP_PER_DAY` | `3` | Per-client cap. IPs are stored only as salted SHA-256 hashes (Firestore `usage/{day}`, or `usage.json` in file mode). |
 | `MAX_SHOTS_PER_JOB` | `4` | The planner is told the limit, then the plan is hard-trimmed (the ending is kept). |
 | `MAX_RUNTIME_S` | `30` | Max film runtime for public jobs. |
 | `MAX_RETRIES` | `1` | Critic reshoots per shot. |
@@ -319,6 +335,7 @@ showrunner-ai/
 ├── app/
 │   ├── config.py                 # Pydantic settings & environment configuration
 │   ├── events.py                 # In-memory SSE event bus for agent logs
+│   ├── job_store.py              # Job state store: Cloud Firestore or job.json files
 │   ├── main.py                   # FastAPI service & REST endpoints
 │   ├── models.py                 # Pydantic data schemas (Job, Plan, Shot, Bible)
 │   ├── pipeline/
@@ -338,6 +355,7 @@ showrunner-ai/
 │           └── video.py          # Veo 3.1 image-to-video provider
 ├── scripts/
 │   ├── deploy.sh                 # Cloud Run deployment script
+│   ├── backfill_firestore.py     # Import existing job.json files into Firestore
 │   └── smoke_google.py           # Provider connectivity validation script
 ├── static/
 │   ├── app.js                    # Reactive Web Studio controller & SSE consumer
