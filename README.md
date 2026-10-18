@@ -274,8 +274,8 @@ The live link is intentionally open (no password) so judges can use it. Abuse an
 
 | Variable | Deployed | Purpose |
 | --- | --- | --- |
-| `MAX_JOBS_PER_DAY` | `25` | Global cap on new productions, chat refinements and resumes per UTC day. |
-| `MAX_JOBS_PER_IP_PER_DAY` | `3` | Per-client cap. IPs are stored only as salted SHA-256 hashes (Firestore `usage/{day}`, or `usage.json` in file mode). |
+| `MAX_JOBS_PER_DAY` | `60` | Global cap on new productions, chat refinements and resumes per UTC day. |
+| `MAX_JOBS_PER_IP_PER_DAY` | `8` | Per-client cap. IPs are stored only as salted SHA-256 hashes (Firestore `usage/{day}`, or `usage.json` in file mode). |
 | `MAX_SHOTS_PER_JOB` | `4` | The planner is told the limit, then the plan is hard-trimmed (the ending is kept). |
 | `MAX_RUNTIME_S` | `30` | Max film runtime for public jobs. |
 | `MAX_RETRIES` | `1` | Critic reshoots per shot. |
